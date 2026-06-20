@@ -21,6 +21,10 @@ type Server struct {
 	l *slog.Logger
 }
 
+var (
+	hashFunc = sha256.New
+)
+
 func New(c oh.Config) (*Server, error) {
 	m, err := internal.OpenMulticastConnection(c.Address(), c.Port(), c.Interface())
 	if err != nil {
@@ -40,14 +44,14 @@ func New(c oh.Config) (*Server, error) {
 	return &Server{
 		config:        c,
 		multicastConn: m,
-		chunker:       chunker.NewChunker(sha256.New()),
+		chunker:       chunker.NewChunker(hashFunc()),
 		l:             logger,
 	}, nil
 }
 
 func (s *Server) SendFiles(files []string) error {
 	var err error
-	s.files, err = openFiles(files, s.chunker)
+	err = s.openFiles(files)
 	if err != nil {
 		return fmt.Errorf("error opening files: %w", err)
 	}

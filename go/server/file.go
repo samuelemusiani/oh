@@ -5,6 +5,7 @@ import (
 
 	"codeberg.org/go-mmap/mmap"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
+	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/merkle_tree"
 )
 
 // The file struct represents a file that has to be sent (or is already sent)
@@ -20,22 +21,24 @@ type file struct {
 	mmapFile *mmap.File
 
 	chunks []*chunker.Chunk
+	mt     *merkletree.MerkleTree
 }
 
-func openFiles(paths []string, chunker *chunker.Chunker) ([]*file, error) {
+func (s *Server) openFiles(paths []string) error {
 	files := make([]*file, 0, len(paths))
 	for _, path := range paths {
-		f, err := openFile(path, chunker)
+		f, err := s.openFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("error opening file %s: %w", path, err)
+			return fmt.Errorf("error opening file %s: %w", path, err)
 		}
 		files = append(files, f)
 	}
 
-	return files, nil
+	s.files = files
+	return nil
 }
 
-func openFile(path string, chunker *chunker.Chunker) (*file, error) {
+func (s *Server) openFile(path string) (*file, error) {
 	mmapFile, err := mmap.OpenFile(path, mmap.Read)
 	if err != nil {
 		return nil, fmt.Errorf("could not open file: %w", err)
@@ -50,9 +53,24 @@ func openFile(path string, chunker *chunker.Chunker) (*file, error) {
 		return nil, fmt.Errorf("path is a directory: %s", path)
 	}
 
-	chunks, err := chunker.ChunkFile(mmapFile)
+	chunks, err := s.chunker.ChunkFile(mmapFile)
 	if err != nil {
 		return nil, fmt.Errorf("could not chunk file: %w", err)
+	}
+
+	leafs := merkletree.NextPowerOfTwo(uint32(len(chunks)))
+	mt, err := merkletree.NewMerkleTree(leafs, func(leaf uint32) ([]byte, error) {
+		if leaf >= uint32(len(chunks)) {
+			// If the leaf index is greater than the number of chunks, we return the
+			// hash of an empty chunk
+			h := hashFunc()
+			h.Reset()
+			return h.Sum(nil), nil
+		}
+		return chunks[leaf].Hash(), nil
+	}, hashFunc())
+	if err != nil {
+		return nil, fmt.Errorf("could not create Merkle tree: %w", err)
 	}
 
 	return &file{
@@ -61,5 +79,6 @@ func openFile(path string, chunker *chunker.Chunker) (*file, error) {
 		name:     stats.Name(),
 		mmapFile: mmapFile,
 		chunks:   chunks,
+		mt:       mt,
 	}, nil
 }
