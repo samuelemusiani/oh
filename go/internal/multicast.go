@@ -134,7 +134,7 @@ loop:
 			return 0, nil, fmt.Errorf("error receiving data: control message is nil or missing destination address")
 		}
 
-		if _, ok := m.myAddrs[cm.Dst.String()]; ok {
+		if _, ok := m.myAddrs[cm.Src.String()]; ok {
 			continue loop
 		}
 
