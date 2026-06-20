@@ -127,13 +127,13 @@ func (m *Metadata) Decode(buff []byte) error {
 		return fmt.Errorf("unknown blob type: %d", blobType)
 	}
 
-	blobData := make([]byte, binary.Size(blobType))
-	if _, err := r.Read(blobData); err != nil && err != io.EOF {
+	data, err := io.ReadAll(r) // Read the remaining bytes for the blob data
+	if err != nil {
 		return fmt.Errorf("error reading blob data: %w", err)
 	}
 
-	if _, err := r.Read(make([]byte, 1)); err != io.EOF {
-		return fmt.Errorf("error decoding: %w", ErrExtraAfterReadingMessage)
+	if err := m.Data.DecodeBlobData(data); err != nil {
+		return fmt.Errorf("error decoding blob data: %w", err)
 	}
 
 	return nil

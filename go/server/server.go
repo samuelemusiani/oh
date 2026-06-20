@@ -149,11 +149,17 @@ func (s *Server) handleMessage(msg packet.Message) error {
 		h := hex.EncodeToString(adv.Hash[:])
 		s.l.Debug("Received advertisement packet", "hash", h)
 	case packet.MessageTypeMetadata:
-		s.l.Debug("Received metadata packet", "metadata", msg.(*packet.Metadata))
+		s.l.Debug("Received metadata packet")
 	case packet.MessageTypeRequest:
 		req := msg.(*packet.Request)
 		h := hex.EncodeToString(req.Hash[:])
 		s.l.Debug("Received request packet", "hash", h)
+
+		// TODO: Check hash if it's for metadata or blob. For now only metadata
+		for _, f := range s.files {
+			s.sendCh <- f.MetadataPacket()
+		}
+
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.Type())
 	}

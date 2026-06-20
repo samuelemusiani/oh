@@ -135,7 +135,9 @@ func (s *Client) handleMessage(msg packet.Message) error {
 		s.sendCh <- s.RequestPacket(adv.Hash)
 
 	case packet.MessageTypeMetadata:
-		s.l.Debug("Received metadata packet", "metadata", msg.(*packet.Metadata))
+		mtd := msg.(*packet.Metadata)
+		h := hex.EncodeToString(mtd.Hash[:])
+		s.l.Debug("Received metadata packet", "hash", h, "size", mtd.Size)
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.Type())
 	}
