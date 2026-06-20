@@ -128,8 +128,12 @@ func (c *Client) run() error {
 func (s *Client) handleMessage(msg packet.Message) error {
 	switch msg.Type() {
 	case packet.MessageTypeAdvertisement:
-		h := hex.EncodeToString((msg.(*packet.Advertisement)).Hash[:])
+		adv := msg.(*packet.Advertisement)
+		h := hex.EncodeToString(adv.Hash[:])
 		s.l.Debug("Received advertisement packet", "hash", h)
+
+		s.sendCh <- s.RequestPacket(adv.Hash)
+
 	case packet.MessageTypeMetadata:
 		s.l.Debug("Received metadata packet", "metadata", msg.(*packet.Metadata))
 	default:

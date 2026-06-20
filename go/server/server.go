@@ -145,10 +145,15 @@ func (s *Server) run() error {
 func (s *Server) handleMessage(msg packet.Message) error {
 	switch msg.Type() {
 	case packet.MessageTypeAdvertisement:
-		h := hex.EncodeToString((msg.(*packet.Advertisement)).Hash[:])
+		adv := msg.(*packet.Advertisement)
+		h := hex.EncodeToString(adv.Hash[:])
 		s.l.Debug("Received advertisement packet", "hash", h)
 	case packet.MessageTypeMetadata:
 		s.l.Debug("Received metadata packet", "metadata", msg.(*packet.Metadata))
+	case packet.MessageTypeRequest:
+		req := msg.(*packet.Request)
+		h := hex.EncodeToString(req.Hash[:])
+		s.l.Debug("Received request packet", "hash", h)
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.Type())
 	}

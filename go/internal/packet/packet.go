@@ -11,6 +11,7 @@ type messageType uint8
 const (
 	MessageTypeAdvertisement messageType = iota
 	MessageTypeMetadata
+	MessageTypeRequest
 
 	MaxPayloadSize = 1024
 )
@@ -92,4 +93,5 @@ func ReadPacket(buff []byte) (Message, error) {
 var messageRegistry = map[messageType]func() Message{
 	MessageTypeAdvertisement: func() Message { return &Advertisement{} },
 	MessageTypeMetadata:      func() Message { return &Metadata{} },
+	MessageTypeRequest:       func() Message { return &Request{} },
 }
