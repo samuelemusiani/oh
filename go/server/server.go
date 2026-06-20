@@ -1,17 +1,22 @@
 package server
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
 
 	oh "gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal"
+	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
 )
 
 type Server struct {
-	c oh.Config
-	m *internal.Multicast
+	config        oh.Config
+	multicastConn *internal.Multicast
+	chunker       *chunker.Chunker
+
+	files []*file
 
 	l *slog.Logger
 }
@@ -33,13 +38,20 @@ func New(c oh.Config) (*Server, error) {
 	}))
 
 	return &Server{
-		c: c,
-		m: m,
-		l: logger,
+		config:        c,
+		multicastConn: m,
+		chunker:       chunker.NewChunker(sha256.New()),
+		l:             logger,
 	}, nil
 }
 
 func (s *Server) SendFiles(files []string) error {
+	var err error
+	s.files, err = openFiles(files, s.chunker)
+	if err != nil {
+		return fmt.Errorf("error opening files: %w", err)
+	}
+
 	// Start server
 	if err := s.run(); err != nil {
 		return fmt.Errorf("error running server: %w", err)
