@@ -59,7 +59,7 @@ func (c *Client) ReceiveFiles(dir string) error {
 	c.dir = dir
 
 	if err := c.run(); err != nil {
-		return fmt.Errorf("error running client state machine: %w", err)
+		return fmt.Errorf("error running client: %w", err)
 	}
 
 	return nil
