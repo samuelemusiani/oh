@@ -2,13 +2,20 @@ package server
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	oh "gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
+	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
+)
+
+const (
+	advertisementInterval = 1 * time.Second
 )
 
 type Server struct {
@@ -17,6 +24,9 @@ type Server struct {
 	chunker       *chunker.Chunker
 
 	files []*file
+
+	sendCh    chan packet.Message
+	receiveCh chan packet.Message
 
 	l *slog.Logger
 }
@@ -45,7 +55,11 @@ func New(c oh.Config) (*Server, error) {
 		config:        c,
 		multicastConn: m,
 		chunker:       chunker.NewChunker(hashFunc()),
-		l:             logger,
+
+		sendCh:    make(chan packet.Message, 100),
+		receiveCh: make(chan packet.Message, 100),
+
+		l: logger,
 	}, nil
 }
 
@@ -65,6 +79,79 @@ func (s *Server) SendFiles(files []string) error {
 	return nil
 }
 
+func (s *Server) sendLoop() {
+	for {
+		// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
+		msg := <-s.sendCh
+		data, err := packet.WritePacket(msg)
+		if err != nil {
+			s.l.Error("error encoding message", "error", err)
+			continue
+		}
+
+		if err := s.multicastConn.Send(data); err != nil {
+			s.l.Error("error sending message", "error", err)
+			continue
+		}
+	}
+}
+
+func (s *Server) receiveLoop() {
+	buff := make([]byte, 65536)
+	for {
+		n, _, err := s.multicastConn.Receive(buff)
+		if err != nil {
+			s.l.Error("error receiving message", "error", err)
+			continue
+		}
+
+		msg, err := packet.ReadPacket(buff[:n])
+		if err != nil {
+			s.l.Error("error decoding message", "error", err)
+			continue
+		}
+
+		s.receiveCh <- msg
+	}
+}
+
 func (s *Server) run() error {
-	return fmt.Errorf("not implemented")
+	go s.sendLoop()
+	go s.receiveLoop()
+
+	advertisementTicker := time.NewTicker(advertisementInterval)
+	for {
+		select {
+		case <-advertisementTicker.C:
+			adv, err := s.AdvertisementPacket()
+			if err != nil {
+				s.l.Error("error creating advertisement packet", "error", err)
+
+				continue
+			}
+			s.sendCh <- adv
+
+		case msg := <-s.receiveCh:
+			err := s.handleMessage(msg)
+			if err != nil {
+				s.l.Error("error handling message", "error", err)
+
+				continue
+			}
+		}
+	}
+}
+
+func (s *Server) handleMessage(msg packet.Message) error {
+	switch msg.Type() {
+	case packet.MessageTypeAdvertisement:
+		h := hex.EncodeToString((msg.(*packet.Advertisement)).Hash[:])
+		s.l.Debug("Received advertisement packet", "hash", h)
+	case packet.MessageTypeMetadata:
+		s.l.Debug("Received metadata packet", "metadata", msg.(*packet.Metadata))
+	default:
+		return fmt.Errorf("unknown message type: %d", msg.Type())
+	}
+
+	return nil
 }
