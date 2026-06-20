@@ -82,3 +82,9 @@ func (s *Server) openFile(path string) (*file, error) {
 		mt:       mt,
 	}, nil
 }
+
+func (s *Server) closeFiles() {
+	for _, f := range s.files {
+		_ = f.mmapFile.Close()
+	}
+}

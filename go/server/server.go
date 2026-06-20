@@ -50,8 +50,7 @@ func New(c oh.Config) (*Server, error) {
 }
 
 func (s *Server) SendFiles(files []string) error {
-	var err error
-	err = s.openFiles(files)
+	err := s.openFiles(files)
 	if err != nil {
 		return fmt.Errorf("error opening files: %w", err)
 	}
@@ -60,6 +59,8 @@ func (s *Server) SendFiles(files []string) error {
 	if err := s.run(); err != nil {
 		return fmt.Errorf("error running server: %w", err)
 	}
+
+	s.closeFiles()
 
 	return nil
 }
