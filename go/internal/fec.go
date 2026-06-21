@@ -1,9 +1,6 @@
 package internal
 
 import (
-	"crypto/rand"
-	"encoding/binary"
-
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
 )
 
@@ -65,13 +62,7 @@ func (f *NullFEC) BlockID(msg packet.Message) uint64 {
 }
 
 func (f *NullFEC) IndexID(msg packet.Message) uint64 {
-	buff := make([]byte, 8)
-	n, err := rand.Read(buff)
-	if err != nil || n != 8 {
-		panic("failed to generate random unique ID for NullFEC")
-	}
-
-	return binary.BigEndian.Uint64(buff)
+	return 0
 }
 
 func (f *NullFEC) Encode(msgs []packet.Message) ([]packet.MessageWithFEC, error) {

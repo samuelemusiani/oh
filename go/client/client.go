@@ -148,7 +148,9 @@ func (s *Client) receiveLoop() {
 	}
 
 	blockMap := make(map[uint64]*block)
-	blockChan := make(chan uint64)
+	// TODO: There is a small possiblity of deadlock if the blockChan is full
+	// and the main loop does not select on it
+	blockChan := make(chan uint64, 4096)
 
 	handleFECMessage := func(msg ReceivedMessageWithSrc) error {
 		blockID := s.fec.BlockID(msg.MSG.MSG)
