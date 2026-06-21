@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"time"
 
@@ -15,18 +16,26 @@ import (
 )
 
 const (
-	advertisementInterval = 1 * time.Second
+	advertisementInterval = 5 * time.Second
+	fecFlushTimeout       = 100 * time.Millisecond
+	fecType               = internal.FECTypeNull
 )
+
+type MessageWithSrc struct {
+	MSG packet.Message
+	Src net.IP
+}
 
 type Server struct {
 	config        oh.Config
 	multicastConn *internal.Multicast
 	chunker       *chunker.Chunker
+	fec           internal.FEC
 
 	files []*file
 
 	sendCh    chan packet.Message
-	receiveCh chan packet.Message
+	receiveCh chan MessageWithSrc
 
 	l *slog.Logger
 }
@@ -55,9 +64,10 @@ func New(c oh.Config) (*Server, error) {
 		config:        c,
 		multicastConn: m,
 		chunker:       chunker.NewChunker(hashFunc()),
+		fec:           internal.NewFEC(fecType),
 
-		sendCh:    make(chan packet.Message, 100),
-		receiveCh: make(chan packet.Message, 100),
+		sendCh:    make(chan packet.Message, 1024),
+		receiveCh: make(chan MessageWithSrc, 1024),
 
 		l: logger,
 	}, nil
@@ -80,26 +90,78 @@ func (s *Server) SendFiles(files []string) error {
 }
 
 func (s *Server) sendLoop() {
-	for {
-		// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
-		msg := <-s.sendCh
-		data, err := packet.WritePacket(msg)
+	fecBlock := make([]packet.Message, 0, s.fec.BlockSize())
+	ticker := time.NewTicker(fecFlushTimeout)
+
+	sendMsg := func(msg packet.Message, fec *packet.FECHeader) error {
+		data, err := packet.WritePacket(msg, fec)
 		if err != nil {
-			s.l.Error("error encoding message", "error", err)
-			continue
+			return fmt.Errorf("error encoding message: %w", err)
 		}
 
 		if err := s.multicastConn.Send(data); err != nil {
-			s.l.Error("error sending message", "error", err)
-			continue
+			return fmt.Errorf("error sending message: %w", err)
+		}
+		return nil
+	}
+
+	flushBlock := func() error {
+		if len(fecBlock) == 0 {
+			return nil
+		}
+		encodedBlock, err := s.fec.Encode(fecBlock)
+		if err != nil {
+			return fmt.Errorf("error encoding FEC block: %w", err)
+		}
+		for _, msg := range encodedBlock {
+			if err := sendMsg(msg.MSG, msg.FEC); err != nil {
+				return fmt.Errorf("error sending message in FEC block: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
+
+	for {
+		select {
+		case <-ticker.C:
+			err := flushBlock()
+			if err != nil {
+				s.l.Error("error flushing FEC block", "error", err)
+			}
+			fecBlock = fecBlock[:0]
+
+		case msg := <-s.sendCh:
+			switch msg.Type() {
+			case packet.MessageTypeFEC:
+				s.l.Error("FEC messages should not be sent directly", "message", msg)
+			case packet.MessageTypeAdvertisement:
+				// Advertisement messages should not be included in FEC blocks
+				err := sendMsg(msg, nil)
+				if err != nil {
+					s.l.Error("error sending advertisement message", "error", err)
+				}
+			default:
+				fecBlock = append(fecBlock, msg)
+				if len(fecBlock) >= s.fec.BlockSize() {
+					err := flushBlock()
+					if err != nil {
+						s.l.Error("error flushing FEC block", "error", err)
+					}
+					fecBlock = fecBlock[:0]
+				}
+			}
 		}
 	}
 }
 
 func (s *Server) receiveLoop() {
+	// As a server we are not expecting to receive any FEC messages,
+	// so we can just ignore the re-construction of FEC blocks.
 	buff := make([]byte, 65536)
 	for {
-		n, _, err := s.multicastConn.Receive(buff)
+		n, src, err := s.multicastConn.Receive(buff)
 		if err != nil {
 			s.l.Error("error receiving message", "error", err)
 			continue
@@ -111,7 +173,10 @@ func (s *Server) receiveLoop() {
 			continue
 		}
 
-		s.receiveCh <- msg
+		s.receiveCh <- MessageWithSrc{
+			MSG: msg.MSG,
+			Src: src,
+		}
 	}
 }
 
@@ -142,16 +207,23 @@ func (s *Server) run() error {
 	}
 }
 
-func (s *Server) handleMessage(msg packet.Message) error {
-	switch msg.Type() {
+func (s *Server) handleMessage(msg MessageWithSrc) error {
+	switch msg.MSG.Type() {
 	case packet.MessageTypeAdvertisement:
-		adv := msg.(*packet.Advertisement)
+		adv, ok := msg.MSG.(*packet.Advertisement)
+		if !ok {
+			panic("message type is advertisement but message is not of type *packet.Advertisement")
+		}
+
 		h := hex.EncodeToString(adv.Hash[:])
-		s.l.Debug("Received advertisement packet", "hash", h)
+		s.l.Debug("Received advertisement packet", "src", msg.Src, "hash", h)
 	case packet.MessageTypeMetadata:
 		s.l.Debug("Received metadata packet")
 	case packet.MessageTypeRequest:
-		req := msg.(*packet.Request)
+		req, ok := msg.MSG.(*packet.Request)
+		if !ok {
+			panic("message type is request but message is not of type *packet.Request")
+		}
 		h := hex.EncodeToString(req.Hash[:])
 		s.l.Debug("Received request packet", "hash", h)
 
@@ -160,8 +232,11 @@ func (s *Server) handleMessage(msg packet.Message) error {
 			s.sendCh <- f.MetadataPacket()
 		}
 
+	case packet.MessageTypeFEC:
+		s.l.Debug("Received FEC message, ignoring it.", "src", msg.Src)
+
 	default:
-		return fmt.Errorf("unknown message type: %d", msg.Type())
+		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
 
 	return nil
