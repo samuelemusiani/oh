@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"slices"
 
 	"codeberg.org/go-mmap/mmap"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
@@ -33,6 +34,11 @@ func (s *Server) openFiles(paths []string) error {
 		}
 		files = append(files, f)
 	}
+
+	// Sort files by their Merkle tree root hash to ensure a deterministic order
+	slices.SortFunc(files, func(a, b *file) int {
+		return slices.Compare(a.mt.Root(), b.mt.Root())
+	})
 
 	s.files = files
 	return nil
