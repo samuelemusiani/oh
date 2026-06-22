@@ -101,6 +101,8 @@ func ReadPacket(buff []byte) (MessageWithFEC, error) {
 		return MessageWithFEC{}, fmt.Errorf("unsupported protocol version: %d", hdr.Version)
 	}
 
+	startIndex := sizeOfGlobalHeader
+
 	var fec *FECHeader
 	if hdr.Flags&FlagFEC != 0 {
 		var fecLength uint16
@@ -108,10 +110,14 @@ func ReadPacket(buff []byte) (MessageWithFEC, error) {
 			return MessageWithFEC{}, fmt.Errorf("error reading FEC header length: %w", err)
 		}
 
+		startIndex += 2
+
 		fecData := make([]byte, fecLength)
 		if _, err := r.Read(fecData); err != nil {
 			return MessageWithFEC{}, fmt.Errorf("error reading FEC header data: %w", err)
 		}
+
+		startIndex += int(fecLength)
 
 		fec = &FECHeader{
 			Data: fecData,
@@ -122,9 +128,8 @@ func ReadPacket(buff []byte) (MessageWithFEC, error) {
 	if !ok {
 		return MessageWithFEC{}, fmt.Errorf("unknown message type: %d", hdr.Type)
 	}
-
 	msg := constructor()
-	remainingBuff := buff[sizeOfGlobalHeader:max(sizeOfGlobalHeader+int(hdr.Length), len(buff))]
+	remainingBuff := buff[startIndex:max(startIndex+int(hdr.Length), len(buff))]
 	if err := msg.Decode(remainingBuff); err != nil {
 		return MessageWithFEC{}, fmt.Errorf("error decoding message type %d: %w", msg.Type(), err)
 	}
