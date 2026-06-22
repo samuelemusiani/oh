@@ -18,7 +18,7 @@ import (
 const (
 	advertisementInterval = 5 * time.Second
 	fecFlushTimeout       = 100 * time.Millisecond
-	fecType               = internal.FECTypeNull
+	fecType               = internal.FECTypeSemiNull
 )
 
 type MessageWithSrc struct {

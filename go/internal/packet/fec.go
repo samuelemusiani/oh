@@ -40,6 +40,12 @@ func (m *FECMessage) Decode(buff []byte) error {
 	if length != uint16(len(buff)-2) {
 		return fmt.Errorf("FEC message length mismatch: expected %d bytes, got %d bytes", length, len(buff)-2)
 	}
+
+	if length == 0 {
+		m.Data = nil
+		return nil
+	}
+
 	m.Data = make([]byte, length)
 	if _, err := r.Read(m.Data); err != nil {
 		return fmt.Errorf("error reading FEC message data: %w", err)

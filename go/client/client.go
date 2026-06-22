@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"os"
 	"time"
@@ -15,7 +16,7 @@ import (
 )
 
 const (
-	fecType = internal.FECTypeNull
+	fecType = internal.FECTypeSemiNull
 
 	fecWaitTimeout = 500 * time.Millisecond
 )
@@ -152,22 +153,34 @@ func (s *Client) receiveLoop() {
 	// and the main loop does not select on it
 	blockChan := make(chan uint64, 4096)
 
-	handleFECMessage := func(msg ReceivedMessageWithSrc) error {
-		blockID := s.fec.BlockID(msg.MSG.MSG)
-		indexID := s.fec.IndexID(msg.MSG.MSG)
-
-		notifyBlock := func(t <-chan time.Time, ctx context.Context, blockID uint64) {
-			select {
-			case <-t:
-				blockChan <- blockID
-			case <-ctx.Done():
-				return
-			}
+	notifyBlock := func(t <-chan time.Time, ctx context.Context, blockID uint64) {
+		select {
+		case <-t:
+			s.l.Debug("FEC block wait timer expired, notifying block for decoding", "blockID", blockID, "random", ctx.Value("random"))
+			blockChan <- blockID
+		case <-ctx.Done():
+			s.l.Debug("FEC block wait timer cancelled, not notifying block for decoding", "blockID", blockID, "random", ctx.Value("random"))
+			return
 		}
+	}
+
+	handleFECMessage := func(msg ReceivedMessageWithSrc) error {
+		blockID, err := s.fec.BlockID(msg.MSG)
+		if err != nil {
+			return fmt.Errorf("error getting block ID from FEC header: %w", err)
+		}
+
+		indexID, err := s.fec.IndexID(msg.MSG)
+		if err != nil {
+			return fmt.Errorf("error getting index ID from FEC header: %w", err)
+		}
+		s.l.Debug("received FEC message", "blockID", blockID, "indexID", indexID, "src", msg.Src.String())
 
 		b, ok := blockMap[blockID]
 		if !ok {
+			s.l.Debug("received first packet for FEC block, creating new block", "blockID", blockID)
 			cancelCtx, cancel := context.WithCancel(context.Background())
+			cancelCtx = context.WithValue(cancelCtx, "random", rand.Uint64())
 			b = &block{
 				buff:   make([]ReceivedMessageWithSrc, 0, s.fec.BlockSize()+s.fec.RepairCount()),
 				index:  make(map[uint64]struct{}),
@@ -175,11 +188,11 @@ func (s *Client) receiveLoop() {
 				ctx:    cancelCtx,
 				cancel: cancel,
 			}
-			blockMap[s.fec.BlockID(msg.MSG.MSG)] = b
+			blockMap[blockID] = b
 			go notifyBlock(b.timer.C, b.ctx, blockID)
 		}
 
-		if _, ok := b.index[s.fec.IndexID(msg.MSG.MSG)]; ok {
+		if _, ok := b.index[indexID]; ok {
 			s.l.Debug("duplicate packet received, ignoring", "blockID", blockID, "indexID", indexID)
 			return nil
 		}
@@ -201,24 +214,26 @@ func (s *Client) receiveLoop() {
 			s.l.Debug("FEC block wait timer expired, discarding packet", "blockID", blockID)
 			return nil
 		} else {
-			// Need to extend the timer
-			b.cancel()
-			select {
-			case <-b.timer.C:
-			default:
-			}
-			cancelCtx, cancel := context.WithCancel(context.Background())
-			b.ctx = cancelCtx
-			b.cancel = cancel
-			go notifyBlock(b.timer.C, b.ctx, blockID)
-			s.l.Debug("FEC block wait timer extended", "blockID", blockID)
+			// // Need to extend the timer
+			// b.cancel()
+			// select {
+			// case <-b.timer.C:
+			// default:
+			// }
+			// cancelCtx, cancel := context.WithCancel(context.Background())
+			// cancelCtx = context.WithValue(cancelCtx, "random", rand.Uint64())
+			// b.ctx = cancelCtx
+			// b.cancel = cancel
+			// go notifyBlock(b.timer.C, b.ctx, blockID)
+			// s.l.Debug("FEC block wait timer extended", "blockID", blockID)
 		}
 
-		// We receive a new packet for this block
+		// We received a new packet for this block
 		b.buff = append(b.buff, msg)
 		b.index[indexID] = struct{}{}
 
 		if len(b.buff) >= s.fec.BlockSize() {
+			s.l.Debug("received enough packets to decode FEC block", "blockID", blockID)
 			// We have received enough packets to decode the block, we can stop the timer
 			if !b.timer.Stop() {
 				// If the timer already expired, we need to drain the channel to prevent a leak
@@ -243,6 +258,8 @@ func (s *Client) receiveLoop() {
 					MSG: msg.MSG.MSG,
 					Src: msg.Src,
 				}
+
+				continue
 			}
 			err := handleFECMessage(msg)
 			if err != nil {
@@ -250,6 +267,7 @@ func (s *Client) receiveLoop() {
 				continue
 			}
 		case blockID := <-blockChan:
+			s.l.Debug("notified to decode FEC block", "blockID", blockID)
 			b, ok := blockMap[blockID]
 			if !ok {
 				panic(fmt.Sprintf("blockID %d not found in blockMap", blockID))
@@ -260,6 +278,7 @@ func (s *Client) receiveLoop() {
 
 			msgs := make([]packet.MessageWithFEC, len(b.buff))
 			for i, msg := range b.buff {
+				s.l.Debug("preparing message for FEC decoding", "blockID", blockID, "indexID", i)
 				msgs[i] = msg.MSG
 			}
 
