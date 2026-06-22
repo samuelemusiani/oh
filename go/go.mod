@@ -1,6 +1,6 @@
 module gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go
 
-go 1.26.4
+go 1.26.3
 
 require (
 	codeberg.org/go-mmap/mmap v0.8.0
