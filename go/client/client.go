@@ -37,7 +37,7 @@ type Client struct {
 	sendCh    chan packet.Message
 	receiveCh chan MessageWithSrc
 
-	l *slog.Logger
+	l map[string]*slog.Logger
 }
 
 func New(c oh.Config) (*Client, error) {
@@ -48,16 +48,6 @@ func New(c oh.Config) (*Client, error) {
 		return nil, fmt.Errorf("error opening multicast connection: %w", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.TimeKey {
-				return slog.Attr{} // drop it
-			}
-			return a
-		},
-		Level: slog.LevelDebug,
-	}))
-
 	return &Client{
 		config:        c,
 		multicastConn: m,
@@ -66,7 +56,7 @@ func New(c oh.Config) (*Client, error) {
 		sendCh:    make(chan packet.Message, 1024),
 		receiveCh: make(chan MessageWithSrc, 1024),
 
-		l: logger,
+		l: makeLoggers(),
 	}, nil
 }
 
@@ -98,12 +88,12 @@ func (s *Client) sendLoop() {
 		msg := <-s.sendCh
 		data, err := packet.WritePacket(msg, nil)
 		if err != nil {
-			s.l.Error("error encoding message", "error", err)
+			s.l["send"].Error("error encoding message", "error", err)
 			continue
 		}
 
 		if err := s.multicastConn.Send(data); err != nil {
-			s.l.Error("error sending message", "error", err)
+			s.l["send"].Error("error sending message", "error", err)
 			continue
 		}
 	}
@@ -123,13 +113,13 @@ func (s *Client) receiveLoop() {
 		for {
 			n, src, err := s.multicastConn.Receive(buff)
 			if err != nil {
-				s.l.Error("error receiving message", "error", err)
+				s.l["receive"].Error("error receiving message", "error", err)
 				continue
 			}
 
 			msg, err := packet.ReadPacket(buff[:n])
 			if err != nil {
-				s.l.Error("error decoding message", "error", err)
+				s.l["receive"].Error("error decoding message", "error", err)
 				continue
 			}
 
@@ -156,10 +146,10 @@ func (s *Client) receiveLoop() {
 	notifyBlock := func(t <-chan time.Time, ctx context.Context, blockID uint64) {
 		select {
 		case <-t:
-			s.l.Debug("FEC block wait timer expired, notifying block for decoding", "blockID", blockID, "random", ctx.Value("random"))
+			s.l["fec"].Debug("FEC block wait timer expired, notifying block for decoding", "blockID", blockID, "random", ctx.Value("random"))
 			blockChan <- blockID
 		case <-ctx.Done():
-			s.l.Debug("FEC block wait timer cancelled, not notifying block for decoding", "blockID", blockID, "random", ctx.Value("random"))
+			s.l["fec"].Debug("FEC block wait timer cancelled, not notifying block for decoding", "blockID", blockID, "random", ctx.Value("random"))
 			return
 		}
 	}
@@ -174,11 +164,11 @@ func (s *Client) receiveLoop() {
 		if err != nil {
 			return fmt.Errorf("error getting index ID from FEC header: %w", err)
 		}
-		s.l.Debug("received FEC message", "blockID", blockID, "indexID", indexID, "src", msg.Src.String())
+		s.l["fec"].Debug("received FEC message", "blockID", blockID, "indexID", indexID, "src", msg.Src.String())
 
 		b, ok := blockMap[blockID]
 		if !ok {
-			s.l.Debug("received first packet for FEC block, creating new block", "blockID", blockID)
+			s.l["fec"].Debug("received first packet for FEC block, creating new block", "blockID", blockID)
 			cancelCtx, cancel := context.WithCancel(context.Background())
 			cancelCtx = context.WithValue(cancelCtx, "random", rand.Uint64())
 			b = &block{
@@ -193,7 +183,7 @@ func (s *Client) receiveLoop() {
 		}
 
 		if _, ok := b.index[indexID]; ok {
-			s.l.Debug("duplicate packet received, ignoring", "blockID", blockID, "indexID", indexID)
+			s.l["fec"].Debug("duplicate packet received, ignoring", "blockID", blockID, "indexID", indexID)
 			return nil
 		}
 
@@ -211,7 +201,7 @@ func (s *Client) receiveLoop() {
 		}
 
 		if !b.timer.Reset(fecWaitTimeout) {
-			s.l.Debug("FEC block wait timer expired, discarding packet", "blockID", blockID)
+			s.l["fec"].Debug("FEC block wait timer expired, discarding packet", "blockID", blockID)
 			return nil
 		} else {
 			// // Need to extend the timer
@@ -233,7 +223,7 @@ func (s *Client) receiveLoop() {
 		b.index[indexID] = struct{}{}
 
 		if len(b.buff) >= s.fec.BlockSize() {
-			s.l.Debug("received enough packets to decode FEC block", "blockID", blockID)
+			s.l["fec"].Debug("received enough packets to decode FEC block", "blockID", blockID)
 			// We have received enough packets to decode the block, we can stop the timer
 			if !b.timer.Stop() {
 				// If the timer already expired, we need to drain the channel to prevent a leak
@@ -263,11 +253,11 @@ func (s *Client) receiveLoop() {
 			}
 			err := handleFECMessage(msg)
 			if err != nil {
-				s.l.Error("error handling FEC message", "error", err)
+				s.l["receive"].Error("error handling FEC message", "error", err)
 				continue
 			}
 		case blockID := <-blockChan:
-			s.l.Debug("notified to decode FEC block", "blockID", blockID)
+			s.l["fec"].Debug("notified to decode FEC block", "blockID", blockID)
 			b, ok := blockMap[blockID]
 			if !ok {
 				panic(fmt.Sprintf("blockID %d not found in blockMap", blockID))
@@ -278,13 +268,13 @@ func (s *Client) receiveLoop() {
 
 			msgs := make([]packet.MessageWithFEC, len(b.buff))
 			for i, msg := range b.buff {
-				s.l.Debug("preparing message for FEC decoding", "blockID", blockID, "indexID", i)
+				s.l["fec"].Debug("preparing message for FEC decoding", "blockID", blockID, "indexID", i)
 				msgs[i] = msg.MSG
 			}
 
 			recovered, err := s.fec.Decode(msgs)
 			if err != nil {
-				s.l.Error("error decoding FEC block", "error", err, "blockID", blockID)
+				s.l["fec"].Error("error decoding FEC block", "error", err, "blockID", blockID)
 				delete(blockMap, blockID)
 				continue
 			}
@@ -299,7 +289,7 @@ func (s *Client) receiveLoop() {
 					Src: src,
 				}
 			}
-			s.l.Debug("FEC block decoded successfully", "blockID", blockID)
+			s.l["fec"].Debug("FEC block decoded successfully", "blockID", blockID)
 			delete(blockMap, blockID)
 		}
 	}
@@ -314,7 +304,7 @@ func (c *Client) run() error {
 		case msg := <-c.receiveCh:
 			err := c.handleMessage(msg)
 			if err != nil {
-				c.l.Error("error handling message", "error", err)
+				c.l["global"].Error("error handling message", "error", err)
 			}
 		}
 	}
@@ -325,17 +315,57 @@ func (s *Client) handleMessage(msg MessageWithSrc) error {
 	case packet.MessageTypeAdvertisement:
 		adv := msg.MSG.(*packet.Advertisement)
 		h := hex.EncodeToString(adv.Hash[:])
-		s.l.Debug("Received advertisement packet", "hash", h)
+		s.l["mhandler"].Info("Received advertisement packet", "hash", h)
 
 		s.sendCh <- s.RequestPacket(adv.Hash)
 
 	case packet.MessageTypeMetadata:
 		mtd := msg.MSG.(*packet.Metadata)
 		h := hex.EncodeToString(mtd.Hash[:])
-		s.l.Debug("Received metadata packet", "hash", h, "size", mtd.Size)
+		s.l["mhandler"].Info("Received metadata packet", "hash", h, "size", mtd.Size)
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
 
 	return nil
+}
+
+func makeLoggers() map[string]*slog.Logger {
+	makeLogger := func(component string, level *slog.LevelVar) *slog.Logger {
+		h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+				if a.Key == slog.TimeKey {
+					return slog.Attr{}
+				}
+				return a
+			},
+			Level: level,
+		})
+		return slog.New(h).With("component", component)
+	}
+
+	levels := map[string]*slog.LevelVar{
+		"global":   {},
+		"fec":      {},
+		"send":     {},
+		"receive":  {},
+		"mhandler": {},
+	}
+
+	loggers := map[string]*slog.Logger{
+		"global":   makeLogger("global", levels["global"]),
+		"fec":      makeLogger("fec", levels["fec"]),
+		"send":     makeLogger("send", levels["send"]),
+		"receive":  makeLogger("receive", levels["receive"]),
+		"mhandler": makeLogger("mhandler", levels["mhandler"]),
+	}
+
+	// Change level at any time, takes effect immediately:
+	levels["global"].Set(slog.LevelDebug)
+	levels["fec"].Set(slog.LevelInfo)
+	levels["send"].Set(slog.LevelDebug)
+	levels["receive"].Set(slog.LevelDebug)
+	levels["mhandler"].Set(slog.LevelInfo)
+
+	return loggers
 }
