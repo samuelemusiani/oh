@@ -1,6 +1,6 @@
-{ pkgs, lib, pimd-pkg }:
+{ pkgs, lib }:
 let
-  inherit (lib) range zipListsWith imap1 mergeAttrsList getBin attrsToList;
+  inherit (lib) range imap1 mergeAttrsList;
   inherit (builtins) length head toString;
 
   idxsToIp = i: j: "10.0.${toString i}.${toString j}";
@@ -39,8 +39,8 @@ in rec {
       "net.ipv4.ip_forward" = true;
       "net.ipv6.conf.all.disable_ipv6" = 1;
     };
-    postSetup = "${getBin pimd-pkg}/bin/pimd --config ${mkPimdConf rpAddress}";
-    scripts.dump.exec = "${getBin pkgs.tcpdump}/bin/tcpdump -i any -w router.pcap";
+    postSetup = "pimd --config ${mkPimdConf rpAddress}";
+    scripts.tcpdump.exec = "tcpdump -i any -w router.pcap";
   };
 
   mkLeafNet = subnetIdx: {
@@ -68,17 +68,16 @@ in rec {
     inherit netem;
   };
 
-  mkStarTopology = { nodePackages ? [] }: nodes:
+  mkStarTopology = nodes:
     let
       nodeList = lib.attrsToList nodes;
       idxs = range 1 (length nodeList);
       indexed = imap1 (idx: {name, value}: {
         inherit idx name;
-        netem = value.netem or netemProfiles.ideal;
+        netem = value.netem or netemProfiles.normal;
         node = removeAttrs value ["netem"];
       }) nodeList;
     in {
-      inherit nodePackages;
       arp = false;
       arpPrefill = true;
 
