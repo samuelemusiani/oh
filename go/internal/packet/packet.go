@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"net"
 )
 
 type messageType uint8
@@ -12,7 +13,6 @@ const (
 	MessageTypeAdvertisement messageType = iota
 	MessageTypeMetadata
 	MessageTypeRequest
-	MessageTypeFEC
 
 	FlagFEC = 1 << 0
 
@@ -30,15 +30,13 @@ type GlobalHeader struct {
 	// Type is the type of the message
 	Type messageType
 
-	Flags uint8
-
 	// Length is the length of the payload in bytes
 	Length uint16
 }
 
-type MessageWithFEC struct {
+type MessageWithSrc struct {
 	MSG Message
-	FEC *FECHeader
+	Src net.IP
 }
 
 type Message interface {
@@ -47,7 +45,7 @@ type Message interface {
 	Decode([]byte) error
 }
 
-func WritePacket(msg Message, fec *FECHeader) ([]byte, error) {
+func WritePacket(msg Message) ([]byte, error) {
 	buff, err := msg.Encode()
 	if err != nil {
 		return nil, fmt.Errorf("error encoding message: %w", err)
@@ -57,30 +55,15 @@ func WritePacket(msg Message, fec *FECHeader) ([]byte, error) {
 		return nil, fmt.Errorf("payload too large: %d bytes (max %d bytes)", len(buff), MaxPayloadSize)
 	}
 
-	var flags uint8
-	if fec != nil {
-		flags |= FlagFEC
-	}
-
 	hdr := GlobalHeader{
 		Version: 1,
 		Type:    msg.Type(),
-		Flags:   flags,
 		Length:  uint16(len(buff)),
 	}
 
 	w := bytes.NewBuffer(nil)
 	if err := binary.Write(w, binary.BigEndian, hdr); err != nil {
 		return nil, fmt.Errorf("error writing global header: %w", err)
-	}
-
-	if fec != nil {
-		if err := binary.Write(w, binary.BigEndian, uint16(len(fec.Data))); err != nil {
-			return nil, fmt.Errorf("error writing FEC header length: %w", err)
-		}
-		if _, err := w.Write(fec.Data); err != nil {
-			return nil, fmt.Errorf("error writing FEC header data: %w", err)
-		}
 	}
 
 	if _, err := w.Write(buff); err != nil {
@@ -90,59 +73,32 @@ func WritePacket(msg Message, fec *FECHeader) ([]byte, error) {
 	return w.Bytes(), nil
 }
 
-func ReadPacket(buff []byte) (MessageWithFEC, error) {
+func ReadPacket(buff []byte) (Message, error) {
 	r := bytes.NewReader(buff)
 	var hdr GlobalHeader
 	if err := binary.Read(r, binary.BigEndian, &hdr); err != nil {
-		return MessageWithFEC{}, fmt.Errorf("error reading global header: %w", err)
+		return nil, fmt.Errorf("error reading global header: %w", err)
 	}
 
 	if hdr.Version != 1 {
-		return MessageWithFEC{}, fmt.Errorf("unsupported protocol version: %d", hdr.Version)
-	}
-
-	startIndex := sizeOfGlobalHeader
-
-	var fec *FECHeader
-	if hdr.Flags&FlagFEC != 0 {
-		var fecLength uint16
-		if err := binary.Read(r, binary.BigEndian, &fecLength); err != nil {
-			return MessageWithFEC{}, fmt.Errorf("error reading FEC header length: %w", err)
-		}
-
-		startIndex += 2
-
-		fecData := make([]byte, fecLength)
-		if _, err := r.Read(fecData); err != nil {
-			return MessageWithFEC{}, fmt.Errorf("error reading FEC header data: %w", err)
-		}
-
-		startIndex += int(fecLength)
-
-		fec = &FECHeader{
-			Data: fecData,
-		}
+		return nil, fmt.Errorf("unsupported protocol version: %d", hdr.Version)
 	}
 
 	constructor, ok := messageRegistry[messageType(hdr.Type)]
 	if !ok {
-		return MessageWithFEC{}, fmt.Errorf("unknown message type: %d", hdr.Type)
+		return nil, fmt.Errorf("unknown message type: %d", hdr.Type)
 	}
 	msg := constructor()
-	remainingBuff := buff[startIndex:max(startIndex+int(hdr.Length), len(buff))]
+	remainingBuff := buff[sizeOfGlobalHeader:max(sizeOfGlobalHeader+int(hdr.Length), len(buff))]
 	if err := msg.Decode(remainingBuff); err != nil {
-		return MessageWithFEC{}, fmt.Errorf("error decoding message type %d: %w", msg.Type(), err)
+		return nil, fmt.Errorf("error decoding message type %d: %w", msg.Type(), err)
 	}
 
-	return MessageWithFEC{
-		MSG: msg,
-		FEC: fec,
-	}, nil
+	return msg, nil
 }
 
 var messageRegistry = map[messageType]func() Message{
 	MessageTypeAdvertisement: func() Message { return &Advertisement{} },
 	MessageTypeMetadata:      func() Message { return &Metadata{} },
 	MessageTypeRequest:       func() Message { return &Request{} },
-	MessageTypeFEC:           func() Message { return &FECMessage{} },
 }
