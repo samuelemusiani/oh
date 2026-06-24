@@ -9,8 +9,10 @@ import (
 
 func (f *file) MetadataPacket() *packet.Metadata {
 	return &packet.Metadata{
-		Hash: [32]byte(f.mt.Root()),
-		Size: f.size,
+		Hash:      [32]byte(f.mt.Root()),
+		HashExtra: [32]byte{},
+		Size:      f.size,
+		MTDepth:   f.mt.Depth(),
 		Data: &packet.FileMetadata{
 			Name: f.name,
 		},

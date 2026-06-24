@@ -25,6 +25,9 @@ type Metadata struct {
 	// Size of the blob in bytes
 	Size uint64
 
+	// Depth of the Merkle tree of the blob
+	MTDepth uint8
+
 	// SHADOW: BlobType blobType
 
 	// Type dependent metadata (file name, stream ID, ...)
@@ -85,6 +88,9 @@ func (m *Metadata) Encode() ([]byte, error) {
 	if err := binary.Write(buff, binary.BigEndian, m.Size); err != nil {
 		return nil, fmt.Errorf("error encoding size: %w", err)
 	}
+	if err := binary.Write(buff, binary.BigEndian, m.MTDepth); err != nil {
+		return nil, fmt.Errorf("error encoding MT depth: %w", err)
+	}
 	if err := binary.Write(buff, binary.BigEndian, m.Data.Type()); err != nil {
 		return nil, fmt.Errorf("error encoding blob type: %w", err)
 	}
@@ -110,6 +116,9 @@ func (m *Metadata) Decode(buff []byte) error {
 	}
 	if err := binary.Read(r, binary.BigEndian, &m.Size); err != nil {
 		return fmt.Errorf("error decoding size: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &m.MTDepth); err != nil {
+		return fmt.Errorf("error decoding MT depth: %w", err)
 	}
 	var blobType blobType
 	if err := binary.Read(r, binary.BigEndian, &blobType); err != nil {

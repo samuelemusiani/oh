@@ -75,3 +75,8 @@ func (mt *MerkleTree) GetNodes(subtree uint16, depth uint8) []Node {
 func (n *Node) Hash() []byte {
 	return n.hash
 }
+
+func (mt *MerkleTree) Depth() uint8 {
+	leafs := (len(mt.t) + 1) / 2
+	return uint8(bits.Len(uint(leafs - 1)))
+}
