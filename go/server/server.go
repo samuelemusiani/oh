@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"time"
 
@@ -27,11 +28,34 @@ type Server struct {
 
 	files []*file
 
+	hashLookup map[[32]byte]hashLookupEntry
+
+	currentManifestHash *[32]byte
+
 	sendCh    chan packet.Message
 	receiveCh chan packet.MessageWithSrc
 
 	l *slog.Logger
 }
+
+type hashType uint8
+
+type hashLookupEntry struct {
+	// Type of the hash (metadata, file, blob)
+	t hashType
+
+	// Set only for file and blob hashes, to identify which file/blob the hash belongs to
+	fileIndex int
+
+	// Set only for blob hashes, to identify which blob the hash belongs to
+	blobIndex int
+}
+
+const (
+	hashTypeManifest hashType = iota
+	hashTypeFile
+	hashTypeBlob
+)
 
 var (
 	hashFunc = sha256.New
@@ -58,6 +82,8 @@ func New(c oh.Config) (*Server, error) {
 		multicastConn: m,
 		chunker:       chunker.NewChunker(hashFunc()),
 		fecEncoder:    internal.NewFECEncoder(internal.NewFEC(fecType), logger),
+
+		hashLookup: make(map[[32]byte]hashLookupEntry),
 
 		sendCh:    make(chan packet.Message, 1024),
 		receiveCh: make(chan packet.MessageWithSrc, 1024),
@@ -175,16 +201,50 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 		if !ok {
 			panic("message type is request but message is not of type *packet.Request")
 		}
-		h := hex.EncodeToString(req.Hash[:])
-		s.l.Debug("Received request packet", "hash", h)
-
-		// TODO: Check hash if it's for metadata or blob. For now only metadata
-		for _, f := range s.files {
-			s.sendCh <- f.MetadataPacket()
+		err := s.handleRequest(req, msg.Src)
+		if err != nil {
+			return fmt.Errorf("error handling request packet: %w", err)
 		}
 
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
+	}
+
+	return nil
+}
+
+func (s *Server) handleRequest(req *packet.Request, src net.IP) error {
+	rh := hex.EncodeToString(req.Hash[:])
+	s.l.Debug("Received request packet", "hash", rh)
+
+	entry, ok := s.hashLookup[req.Hash]
+	if !ok {
+		s.l.Debug("Received request packet for unknown hash", "hash", rh)
+
+		return nil
+	}
+
+	switch entry.t {
+	case hashTypeManifest:
+		// We need to send the metadata packets for all files
+		for _, f := range s.files {
+			s.sendCh <- f.MetadataPacket(*s.currentManifestHash)
+		}
+	case hashTypeFile:
+		file := s.files[entry.fileIndex]
+		for i := range file.chunks {
+			pkts, err := file.BlobPacket(uint32(i))
+			if err != nil {
+				return fmt.Errorf("error creating blob packet for file %s: %w", file.name, err)
+			}
+
+			for _, pkt := range pkts {
+				s.sendCh <- &pkt
+			}
+		}
+	case hashTypeBlob:
+	default:
+		panic("unknown hash type")
 	}
 
 	return nil

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,10 @@ const (
 	fecType = internal.FECTypeSemiNull
 )
 
+var (
+	hashFunc = sha256.New
+)
+
 type Client struct {
 	config        oh.Config
 	multicastConn *internal.Multicast
@@ -22,6 +27,10 @@ type Client struct {
 
 	// Directory to save files to
 	dir string
+
+	metadataBuff map[[32]byte][]*packet.Metadata
+
+	filesToRequest chan [32]byte
 
 	sendCh    chan packet.Message
 	receiveCh chan packet.MessageWithSrc
@@ -43,6 +52,9 @@ func New(c oh.Config) (*Client, error) {
 		config:        c,
 		multicastConn: m,
 		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), l["fec"]),
+
+		metadataBuff:   make(map[[32]byte][]*packet.Metadata),
+		filesToRequest: make(chan [32]byte, 1024),
 
 		sendCh:    make(chan packet.Message, 1024),
 		receiveCh: make(chan packet.MessageWithSrc, 1024),
@@ -72,19 +84,19 @@ func (c *Client) ReceiveFiles(dir string) error {
 	return nil
 }
 
-func (s *Client) sendLoop() {
+func (c *Client) sendLoop() {
 	// Clients are not expected to send any FEC blocks, we can ignore the construction
 	for {
 		// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
-		msg := <-s.sendCh
+		msg := <-c.sendCh
 		data, err := packet.WritePacket(msg)
 		if err != nil {
-			s.l["send"].Error("error encoding message", "error", err)
+			c.l["send"].Error("error encoding message", "error", err)
 			continue
 		}
 
-		if err := s.multicastConn.Send(data); err != nil {
-			s.l["send"].Error("error sending message", "error", err)
+		if err := c.multicastConn.Send(data); err != nil {
+			c.l["send"].Error("error sending message", "error", err)
 			continue
 		}
 	}
@@ -127,19 +139,30 @@ func (c *Client) run() error {
 	}
 }
 
-func (s *Client) handleMessage(msg packet.MessageWithSrc) error {
+func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 	switch msg.MSG.Type() {
 	case packet.MessageTypeAdvertisement:
 		adv := msg.MSG.(*packet.Advertisement)
 		h := hex.EncodeToString(adv.Hash[:])
-		s.l["mhandler"].Info("Received advertisement packet", "hash", h)
+		c.l["mhandler"].Info("Received advertisement packet", "hash", h)
 
-		s.sendCh <- s.RequestPacket(adv.Hash)
+		err := c.handleAdvertisement(adv)
+		if err != nil {
+			return fmt.Errorf("error handling advertisement: %w", err)
+		}
 
 	case packet.MessageTypeMetadata:
 		mtd := msg.MSG.(*packet.Metadata)
 		h := hex.EncodeToString(mtd.Hash[:])
-		s.l["mhandler"].Info("Received metadata packet", "hash", h, "size", mtd.Size)
+		c.l["mhandler"].Info("Received metadata packet", "hash", h, "size", mtd.Size)
+
+		// s.sendCh <- s.RequestPacket(mtd.Hash)
+
+	case packet.MessageTypeData:
+		data := msg.MSG.(*packet.Data)
+		fh := hex.EncodeToString(data.FileHash[:])
+		bh := hex.EncodeToString(data.BlobHash[:])
+		c.l["mhandler"].Info("Received data packet", "file_hash", fh, "blob_hash", bh, "blob_id", data.BlobID, "packet_id", data.PacketID)
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
@@ -167,6 +190,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"send":     {},
 		"receive":  {},
 		"mhandler": {},
+		"metadata": {},
 	}
 
 	loggers := map[string]*slog.Logger{
@@ -175,6 +199,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"send":     makeLogger("send", levels["send"]),
 		"receive":  makeLogger("receive", levels["receive"]),
 		"mhandler": makeLogger("mhandler", levels["mhandler"]),
+		"metadata": makeLogger("metadata", levels["metadata"]),
 	}
 
 	// Change level at any time, takes effect immediately:
@@ -183,6 +208,7 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["send"].Set(slog.LevelDebug)
 	levels["receive"].Set(slog.LevelDebug)
 	levels["mhandler"].Set(slog.LevelInfo)
+	levels["metadata"].Set(slog.LevelDebug)
 
 	return loggers
 }

@@ -41,6 +41,21 @@ func (s *Server) openFiles(paths []string) error {
 	})
 
 	s.files = files
+	for i, f := range s.files {
+		s.hashLookup[[32]byte(f.mt.Root())] = hashLookupEntry{
+			t:         hashTypeFile,
+			fileIndex: i,
+		}
+
+		for j, c := range f.chunks {
+			s.hashLookup[[32]byte(c.Hash())] = hashLookupEntry{
+				t:         hashTypeBlob,
+				fileIndex: i,
+				blobIndex: j,
+			}
+		}
+	}
+
 	return nil
 }
 

@@ -13,6 +13,7 @@ const (
 	MessageTypeAdvertisement messageType = iota
 	MessageTypeMetadata
 	MessageTypeRequest
+	MessageTypeData
 
 	FlagFEC = 1 << 0
 
@@ -101,4 +102,5 @@ var messageRegistry = map[messageType]func() Message{
 	MessageTypeAdvertisement: func() Message { return &Advertisement{} },
 	MessageTypeMetadata:      func() Message { return &Metadata{} },
 	MessageTypeRequest:       func() Message { return &Request{} },
+	MessageTypeData:          func() Message { return &Data{} },
 }

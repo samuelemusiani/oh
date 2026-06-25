@@ -16,6 +16,9 @@ const (
 )
 
 type Metadata struct {
+	// Hash of the manifest that contains this metadata
+	ManifestHash [32]byte
+
 	// Root hash of the Merkle tree of the blob
 	Hash [32]byte
 
@@ -79,6 +82,9 @@ func (s *StreamMetadata) Type() blobType {
 
 func (m *Metadata) Encode() ([]byte, error) {
 	buff := bytes.NewBuffer(nil)
+	if err := binary.Write(buff, binary.BigEndian, m.ManifestHash); err != nil {
+		return nil, fmt.Errorf("error encoding manifest hash: %w", err)
+	}
 	if err := binary.Write(buff, binary.BigEndian, m.Hash); err != nil {
 		return nil, fmt.Errorf("error encoding hash: %w", err)
 	}
@@ -108,6 +114,9 @@ func (m *Metadata) Encode() ([]byte, error) {
 
 func (m *Metadata) Decode(buff []byte) error {
 	r := bytes.NewReader(buff)
+	if err := binary.Read(r, binary.BigEndian, &m.ManifestHash); err != nil {
+		return fmt.Errorf("error decoding manifest hash: %w", err)
+	}
 	if err := binary.Read(r, binary.BigEndian, &m.Hash); err != nil {
 		return fmt.Errorf("error decoding hash: %w", err)
 	}

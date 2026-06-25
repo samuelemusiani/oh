@@ -312,7 +312,7 @@ func NewFEC(t FECType) FEC {
 		return &nullFEC{}
 	case FECTypeSemiNull:
 		return &semiNullFEC{
-			BlockSizeValue:   2,
+			BlockSizeValue:   10,
 			RepairCountValue: 0,
 		}
 	default:
@@ -522,7 +522,6 @@ func (f *semiNullFEC) Encode(block []packet.Message) ([]Packet, error) {
 }
 
 func (f *semiNullFEC) Decode(pkts []Packet) ([]packet.Message, error) {
-	fmt.Printf("Decoding FEC block with %d packets\n", len(pkts))
 	result := make([]packet.Message, 0, len(pkts))
 	var blockID *uint64
 	indexIDs := make(map[uint64]struct{})
