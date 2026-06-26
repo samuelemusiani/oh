@@ -172,6 +172,24 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	c.l["file"].Debug("starting chunk handler for file", "file_hash", htos(hf))
 	timer := time.NewTimer(30 * time.Second)
 
+	totalWritten := uint64(0)
+	var totalSize uint64
+	c.filesMapMutex.Lock()
+	f, ok := c.filesMap[hf]
+	if !ok {
+		panic(fmt.Sprintf("file not found for hash %x, this should never happen", hf))
+	}
+	c.filesMapMutex.Unlock()
+
+	c.metadataBuffMutex.Lock()
+	for _, m := range c.metadataBuff[f.metadataHash] {
+		if m.Hash == hf {
+			totalSize = m.Size
+			break
+		}
+	}
+	c.metadataBuffMutex.Unlock()
+
 	type metaChunk struct {
 		hash     [32]byte
 		id       uint32
@@ -270,6 +288,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				return fmt.Errorf("error writing chunk %d packet %d to file: wrote %d bytes, expected %d", id, i, n, len(chunk.data))
 			}
 			offset += int64(len(chunk.data))
+			totalWritten += uint64(len(chunk.data))
 		}
 
 		return nil
@@ -337,6 +356,11 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			err := addChunk(ch)
 			if err != nil {
 				c.l["file"].Error("error adding chunk for file", "file_hash", htos(hf), "error", err)
+			}
+
+			if totalWritten < totalSize {
+				c.l["file"].Debug("file not complete yet", "file_hash", htos(hf), "total_written", totalWritten, "total_size", totalSize)
+				continue
 			}
 
 			mt, err := c.merkleTreeForFile(hf)
