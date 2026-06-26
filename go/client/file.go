@@ -425,7 +425,11 @@ func (c *Client) merkleTreeForFile(hf [32]byte) (*merkletree.MerkleTree, error) 
 
 	expectedLeafs := uint32(1) << mtDepth
 	calculatedLeafs := merkletree.NextPowerOfTwo(uint32(len(chunks)))
+	if calculatedLeafs == 1 {
+		calculatedLeafs = 2 // Merkle tree must have at least 2 leafs
+	}
 	if expectedLeafs != calculatedLeafs {
+		c.l["file"].Debug("Merkle tree depth does not match number of chunks", "file_hash", htos(hf), "expected_leafs", expectedLeafs, "calculated_leafs", calculatedLeafs)
 		return nil, nil
 	}
 
