@@ -42,12 +42,20 @@ func (s *Server) openFiles(paths []string) error {
 
 	s.files = files
 	for i, f := range s.files {
+		if _, ok := s.hashLookup[[32]byte(f.mt.Root())]; ok {
+			panic(fmt.Sprintf("duplicate file hash %x for file %s", f.mt.Root(), f.path))
+		}
+
 		s.hashLookup[[32]byte(f.mt.Root())] = hashLookupEntry{
 			t:         hashTypeFile,
 			fileIndex: i,
 		}
 
 		for j, c := range f.chunks {
+			if _, ok := s.hashLookup[[32]byte(c.Hash())]; ok {
+				panic(fmt.Sprintf("duplicate chunk hash %x for file %s", c.Hash(), f.path))
+			}
+
 			s.hashLookup[[32]byte(c.Hash())] = hashLookupEntry{
 				t:         hashTypeBlob,
 				fileIndex: i,
@@ -80,6 +88,12 @@ func (s *Server) openFile(path string) (*file, error) {
 	}
 
 	leafs := merkletree.NextPowerOfTwo(uint32(len(chunks)))
+	if leafs == 1 {
+		// We need at least 2 leafs to avoid creating a MT with only one leaf
+		// because it will then have the same root hash as the leaf, which will
+		// cause conflicts in hash lookups.
+		leafs = 2
+	}
 	mt, err := merkletree.NewMerkleTree(leafs, func(leaf uint32) ([]byte, error) {
 		if leaf >= uint32(len(chunks)) {
 			// If the leaf index is greater than the number of chunks, we return the

@@ -15,6 +15,11 @@ type Data struct {
 	BlobHash [32]byte
 	// BlobIndex is the index of the blob in the file
 	BlobID uint32
+	// BlobOffset is the offset of the blob in the file
+	// NOTE: We don't acctually need this, we could calculate it if we had received
+	// all the previous blobs. But since this would mean a bit of buffering on the
+	// client side, we will just send it with the data packet.
+	BlobOffset uint64
 	// BlobLen is the length of the blob in bytes
 	BlobLen uint32
 	// PacketID is the index of the packet in the blob
@@ -37,6 +42,9 @@ func (d *Data) Encode() ([]byte, error) {
 	}
 	if err := binary.Write(buff, binary.BigEndian, d.BlobID); err != nil {
 		return nil, fmt.Errorf("error encoding blob id: %w", err)
+	}
+	if err := binary.Write(buff, binary.BigEndian, d.BlobOffset); err != nil {
+		return nil, fmt.Errorf("error encoding blob offset: %w", err)
 	}
 	if err := binary.Write(buff, binary.BigEndian, d.BlobLen); err != nil {
 		return nil, fmt.Errorf("error encoding blob len: %w", err)
@@ -61,6 +69,9 @@ func (d *Data) Decode(buff []byte) error {
 	}
 	if err := binary.Read(r, binary.BigEndian, &d.BlobID); err != nil {
 		return fmt.Errorf("error decoding blob id: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &d.BlobOffset); err != nil {
+		return fmt.Errorf("error decoding blob offset: %w", err)
 	}
 	if err := binary.Read(r, binary.BigEndian, &d.BlobLen); err != nil {
 		return fmt.Errorf("error decoding blob len: %w", err)

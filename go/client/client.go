@@ -2,18 +2,19 @@ package client
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal"
+	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
 )
 
 const (
-	fecType = internal.FECTypeSemiNull
+	fecType = internal.FECTypeNull
 )
 
 var (
@@ -24,11 +25,15 @@ type Client struct {
 	config        oh.Config
 	multicastConn *internal.Multicast
 	fecDecoder    *internal.FECDecoder
+	chunker       *chunker.Chunker
 
 	// Directory to save files to
 	dir string
 
-	metadataBuff map[[32]byte][]*packet.Metadata
+	metadataBuff      map[[32]byte][]*packet.Metadata
+	metadataBuffMutex sync.Mutex
+	filesMap          map[[32]byte]*file
+	filesMapMutex     sync.Mutex
 
 	filesToRequest chan [32]byte
 
@@ -52,9 +57,11 @@ func New(c oh.Config) (*Client, error) {
 		config:        c,
 		multicastConn: m,
 		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), l["fec"]),
+		chunker:       chunker.NewChunker(hashFunc()),
 
 		metadataBuff:   make(map[[32]byte][]*packet.Metadata),
-		filesToRequest: make(chan [32]byte, 1024),
+		filesMap:       make(map[[32]byte]*file),
+		filesToRequest: make(chan [32]byte),
 
 		sendCh:    make(chan packet.Message, 1024),
 		receiveCh: make(chan packet.MessageWithSrc, 1024),
@@ -127,23 +134,23 @@ func (c *Client) receiveLoop() {
 func (c *Client) run() error {
 	go c.sendLoop()
 	go c.receiveLoop()
+	go c.requestFiles()
 
-	for {
-		select {
-		case msg := <-c.receiveCh:
-			err := c.handleMessage(msg)
-			if err != nil {
-				c.l["global"].Error("error handling message", "error", err)
-			}
+	for msg := range c.receiveCh {
+		err := c.handleMessage(msg)
+		if err != nil {
+			c.l["global"].Error("error handling message", "error", err)
 		}
 	}
+
+	return nil
 }
 
 func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 	switch msg.MSG.Type() {
 	case packet.MessageTypeAdvertisement:
 		adv := msg.MSG.(*packet.Advertisement)
-		h := hex.EncodeToString(adv.Hash[:])
+		h := htos(adv.Hash)
 		c.l["mhandler"].Info("Received advertisement packet", "hash", h)
 
 		err := c.handleAdvertisement(adv)
@@ -153,16 +160,45 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 
 	case packet.MessageTypeMetadata:
 		mtd := msg.MSG.(*packet.Metadata)
-		h := hex.EncodeToString(mtd.Hash[:])
+		h := htos(mtd.Hash)
 		c.l["mhandler"].Info("Received metadata packet", "hash", h, "size", mtd.Size)
 
 		// s.sendCh <- s.RequestPacket(mtd.Hash)
+		err := c.handleMetadata(mtd)
+		if err != nil {
+			return fmt.Errorf("error handling metadata: %w", err)
+		}
 
 	case packet.MessageTypeData:
 		data := msg.MSG.(*packet.Data)
-		fh := hex.EncodeToString(data.FileHash[:])
-		bh := hex.EncodeToString(data.BlobHash[:])
+		fh := htos(data.FileHash)
+		bh := htos(data.BlobHash)
 		c.l["mhandler"].Info("Received data packet", "file_hash", fh, "blob_hash", bh, "blob_id", data.BlobID, "packet_id", data.PacketID)
+
+		c.metadataBuffMutex.Lock()
+		c.filesMapMutex.Lock()
+		f, ok := c.filesMap[data.FileHash]
+		if !ok {
+			err := c.prepareFile(data.FileHash)
+			if err != nil {
+				c.metadataBuffMutex.Unlock()
+				c.filesMapMutex.Unlock()
+				return fmt.Errorf("error preparing file: %w", err)
+			}
+			f = c.filesMap[data.FileHash]
+		}
+		c.metadataBuffMutex.Unlock()
+		c.filesMapMutex.Unlock()
+
+		f.chunkChan <- chunk{
+			chunkHash:   data.BlobHash,
+			chunkID:     data.BlobID,
+			chunkOffset: data.BlobOffset,
+			chunkLen:    data.BlobLen,
+			packetIndex: data.PacketID,
+			data:        data.Data,
+		}
+
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
@@ -191,6 +227,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"receive":  {},
 		"mhandler": {},
 		"metadata": {},
+		"file":     {},
 	}
 
 	loggers := map[string]*slog.Logger{
@@ -200,6 +237,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"receive":  makeLogger("receive", levels["receive"]),
 		"mhandler": makeLogger("mhandler", levels["mhandler"]),
 		"metadata": makeLogger("metadata", levels["metadata"]),
+		"file":     makeLogger("file", levels["file"]),
 	}
 
 	// Change level at any time, takes effect immediately:
@@ -208,7 +246,8 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["send"].Set(slog.LevelDebug)
 	levels["receive"].Set(slog.LevelDebug)
 	levels["mhandler"].Set(slog.LevelInfo)
-	levels["metadata"].Set(slog.LevelDebug)
+	levels["metadata"].Set(slog.LevelInfo)
+	levels["file"].Set(slog.LevelDebug)
 
 	return loggers
 }

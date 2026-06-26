@@ -17,7 +17,7 @@ import (
 
 const (
 	advertisementInterval = 5 * time.Second
-	fecType               = internal.FECTypeSemiNull
+	fecType               = internal.FECTypeNull
 )
 
 type Server struct {
@@ -226,23 +226,28 @@ func (s *Server) handleRequest(req *packet.Request, src net.IP) error {
 
 	switch entry.t {
 	case hashTypeManifest:
+		s.l.Debug("Received request packet for manifest hash", "hash", rh)
 		// We need to send the metadata packets for all files
 		for _, f := range s.files {
 			s.sendCh <- f.MetadataPacket(*s.currentManifestHash)
 		}
 	case hashTypeFile:
+		s.l.Debug("Received request packet for file hash", "hash", rh)
 		file := s.files[entry.fileIndex]
 		for i := range file.chunks {
+			s.l.Debug("Constructing blob packets for file", "file", file.name, "blob_index", i)
 			pkts, err := file.BlobPacket(uint32(i))
 			if err != nil {
 				return fmt.Errorf("error creating blob packet for file %s: %w", file.name, err)
 			}
 
+			s.l.Debug("Sending blob packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
 			for _, pkt := range pkts {
 				s.sendCh <- &pkt
 			}
 		}
 	case hashTypeBlob:
+		s.l.Debug("Received request packet for blob hash", "hash", rh)
 	default:
 		panic("unknown hash type")
 	}

@@ -9,10 +9,11 @@ import (
 
 func (f *file) MetadataPacket(manifestHash [32]byte) *packet.Metadata {
 	return &packet.Metadata{
-		Hash:      [32]byte(f.mt.Root()),
-		HashExtra: [32]byte{},
-		Size:      f.size,
-		MTDepth:   f.mt.Depth(),
+		ManifestHash: manifestHash,
+		Hash:         [32]byte(f.mt.Root()),
+		HashExtra:    [32]byte{},
+		Size:         f.size,
+		MTDepth:      f.mt.Depth(),
 		Data: &packet.FileMetadata{
 			Name: f.name,
 		},
@@ -68,14 +69,17 @@ func (f *file) BlobPacket(index uint32) ([]packet.Data, error) {
 
 	pkts := make([]packet.Data, 0)
 
+	fmt.Println("offset:", f.chunks[index].Offset())
+
 	for i := 0; i < len(data); i += maxDataSize {
 		pkts = append(pkts, packet.Data{
-			FileHash: [32]byte(f.mt.Root()),
-			BlobHash: [32]byte(f.chunks[index].Hash()),
-			BlobID:   index,
-			BlobLen:  uint32(len(data)),
-			PacketID: uint32(i / maxDataSize),
-			Data:     data[i:min(i+maxDataSize, len(data))],
+			FileHash:   [32]byte(f.mt.Root()),
+			BlobHash:   [32]byte(f.chunks[index].Hash()),
+			BlobID:     index,
+			BlobOffset: f.chunks[index].Offset(),
+			BlobLen:    uint32(len(data)),
+			PacketID:   uint32(i / maxDataSize),
+			Data:       data[i:min(i+maxDataSize, len(data))],
 		})
 	}
 
