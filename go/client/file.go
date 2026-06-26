@@ -43,6 +43,7 @@ type file struct {
 
 // Gorouting that will request on file at a time from the filesToRequest channel
 func (c *Client) requestFiles(finish chan struct{}) {
+	atLeastOneFile := false
 	for {
 		select {
 		case f := <-c.filesToRequest:
@@ -50,7 +51,11 @@ func (c *Client) requestFiles(finish chan struct{}) {
 			if err != nil {
 				c.l["request"].Error("error requesting file", "hash", f, "error", err)
 			}
+			atLeastOneFile = true
 		case <-time.After(5 * time.Second):
+			if !atLeastOneFile {
+				continue
+			}
 			finish <- struct{}{}
 			return
 		}
@@ -327,7 +332,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			c.l["file"].Debug("received data packet for file", "file_hash", htos(hf))
 			c.l["file"].Debug("data info", "chunk_hash", htos(ch.chunkHash), "chunk_id", ch.chunkID, "chunk_len", ch.chunkLen, "packet_index", ch.packetIndex)
 
-			timer.Reset(30 * time.Second)
+			timer.Reset(5 * time.Second)
 
 			err := addChunk(ch)
 			if err != nil {
@@ -356,8 +361,9 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			return
 		case <-timer.C:
 			c.l["file"].Debug("timeout waiting for chunks for file", "file_hash", hf)
+			panic("not implemented yet: request missing chunks")
 			// TODO: request missing chunks
-			timer.Reset(30 * time.Second)
+			timer.Reset(5 * time.Second)
 		}
 	}
 }
@@ -365,12 +371,12 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 func (c *Client) merkleTreeForFile(hf [32]byte) (*merkletree.MerkleTree, error) {
 	var mmapFile *mmap.File
 	var mtDepth uint8
-	c.filesMapMutex.Lock()
 	c.metadataBuffMutex.Lock()
+	c.filesMapMutex.Lock()
 	f, ok := c.filesMap[hf]
 	if !ok {
-		c.filesMapMutex.Unlock()
 		c.metadataBuffMutex.Unlock()
+		c.filesMapMutex.Unlock()
 		return nil, fmt.Errorf("file not found for hash %x", hf)
 	}
 	mmapFile = f.mmapFile
@@ -385,8 +391,8 @@ func (c *Client) merkleTreeForFile(hf [32]byte) (*merkletree.MerkleTree, error) 
 		panic("metadata for file not found, this should never happen")
 	}
 
-	c.filesMapMutex.Unlock()
 	c.metadataBuffMutex.Unlock()
+	c.filesMapMutex.Unlock()
 
 	chunks, err := c.chunker.ChunkFile(mmapFile)
 	if err != nil {

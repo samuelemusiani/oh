@@ -36,7 +36,7 @@ DEFAULT_CLIENT_DIR = "/tmp/mftp-received"
 
 # Random file generation defaults
 GEN_FILE_COUNT   = 5
-GEN_FILE_MAX_BYTES = 1024 * 4 * 50
+GEN_FILE_MAX_BYTES = 1024 * 4 * 1024
 GEN_FILE_STRICY = False # generate files with exactly GEN_FILE_MAX_BYTES if True, otherwise random sizes up to that limit
 
 GEN_FILENAME_LENGTH = 8
