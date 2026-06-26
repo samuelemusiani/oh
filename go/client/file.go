@@ -42,13 +42,20 @@ type file struct {
 }
 
 // Gorouting that will request on file at a time from the filesToRequest channel
-func (c *Client) requestFiles() {
-	for f := range c.filesToRequest {
-		err := c.requestFile(f)
-		if err != nil {
-			c.l["request"].Error("error requesting file", "hash", f, "error", err)
+func (c *Client) requestFiles(finish chan struct{}) {
+	for {
+		select {
+		case f := <-c.filesToRequest:
+			err := c.requestFile(f)
+			if err != nil {
+				c.l["request"].Error("error requesting file", "hash", f, "error", err)
+			}
+		case <-time.After(5 * time.Second):
+			finish <- struct{}{}
+			return
 		}
 	}
+
 }
 
 func (c *Client) requestFile(hf [32]byte) error {
@@ -339,7 +346,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 			root := mt.Root()
 			if !bytes.Equal(root, hf[:]) {
-				c.l["file"].Error("Merkle tree root does not match file hash", "file_hash", htos(hf), "merkle_root", htos([32]byte(root)))
+				// c.l["file"].Debug("Merkle tree root does not match file hash", "file_hash", htos(hf), "merkle_root", htos([32]byte(root)))
 				continue
 			}
 

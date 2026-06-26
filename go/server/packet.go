@@ -69,8 +69,6 @@ func (f *file) BlobPacket(index uint32) ([]packet.Data, error) {
 
 	pkts := make([]packet.Data, 0)
 
-	fmt.Println("offset:", f.chunks[index].Offset())
-
 	for i := 0; i < len(data); i += maxDataSize {
 		pkts = append(pkts, packet.Data{
 			FileHash:   [32]byte(f.mt.Root()),

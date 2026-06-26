@@ -31,7 +31,7 @@ func (c *Chunker) ChunkFile(r io.ReaderAt) ([]*Chunk, error) {
 	// the file into chunks. For now, we just split the file into fixed-size chunks
 	// of 1024 bytes and hash each chunk.
 
-	size := 1024
+	size := 1024 * 4
 	chunks := make([]*Chunk, 0)
 
 	for {

@@ -74,7 +74,7 @@ func New(c oh.Config) (*Server, error) {
 			}
 			return a
 		},
-		Level: slog.LevelDebug,
+		Level: slog.LevelInfo,
 	}))
 
 	return &Server{
@@ -162,9 +162,16 @@ func (s *Server) run() error {
 	}
 	s.sendCh <- adv
 
+	lastReceivedMessage := time.Now()
+
 	for {
 		select {
 		case <-advertisementTicker.C:
+			if time.Since(lastReceivedMessage) > 10*time.Second {
+				s.l.Info("No messages received for 10 seconds, termintating")
+				return nil
+			}
+
 			adv, err := s.AdvertisementPacket()
 			if err != nil {
 				s.l.Error("error creating advertisement packet", "error", err)
@@ -174,17 +181,20 @@ func (s *Server) run() error {
 			s.sendCh <- adv
 
 		case msg := <-s.receiveCh:
-			err := s.handleMessage(msg)
+			wasMeaningful, err := s.handleMessage(msg)
 			if err != nil {
 				s.l.Error("error handling message", "error", err)
 
 				continue
 			}
+			if wasMeaningful {
+				lastReceivedMessage = time.Now()
+			}
 		}
 	}
 }
 
-func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
+func (s *Server) handleMessage(msg packet.MessageWithSrc) (bool, error) {
 	switch msg.MSG.Type() {
 	case packet.MessageTypeAdvertisement:
 		adv, ok := msg.MSG.(*packet.Advertisement)
@@ -194,8 +204,10 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 
 		h := hex.EncodeToString(adv.Hash[:])
 		s.l.Debug("Received advertisement packet", "src", msg.Src, "hash", h)
+		return false, nil
 	case packet.MessageTypeMetadata:
 		s.l.Debug("Received metadata packet")
+		return false, nil
 	case packet.MessageTypeRequest:
 		req, ok := msg.MSG.(*packet.Request)
 		if !ok {
@@ -203,14 +215,14 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 		}
 		err := s.handleRequest(req, msg.Src)
 		if err != nil {
-			return fmt.Errorf("error handling request packet: %w", err)
+			return false, fmt.Errorf("error handling request packet: %w", err)
 		}
 
-	default:
-		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
-	}
+		return true, nil
 
-	return nil
+	default:
+		return false, fmt.Errorf("unknown message type: %d", msg.MSG.Type())
+	}
 }
 
 func (s *Server) handleRequest(req *packet.Request, src net.IP) error {
@@ -245,9 +257,12 @@ func (s *Server) handleRequest(req *packet.Request, src net.IP) error {
 			for _, pkt := range pkts {
 				s.sendCh <- &pkt
 			}
+
+			time.Sleep(100 * time.Millisecond) // Sleep a bit to avoid flooding the network
 		}
 	case hashTypeBlob:
 		s.l.Debug("Received request packet for blob hash", "hash", rh)
+		panic("not implemented yet")
 	default:
 		panic("unknown hash type")
 	}

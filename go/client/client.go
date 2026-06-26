@@ -132,18 +132,24 @@ func (c *Client) receiveLoop() {
 }
 
 func (c *Client) run() error {
+	finish := make(chan struct{})
 	go c.sendLoop()
 	go c.receiveLoop()
-	go c.requestFiles()
+	go c.requestFiles(finish)
 
-	for msg := range c.receiveCh {
-		err := c.handleMessage(msg)
-		if err != nil {
-			c.l["global"].Error("error handling message", "error", err)
+	for {
+		select {
+		case msg := <-c.receiveCh:
+			err := c.handleMessage(msg)
+			if err != nil {
+				c.l["global"].Error("error handling message", "error", err)
+			}
+
+		case <-finish:
+			c.l["global"].Info("All files received, exiting")
+			return nil
 		}
 	}
-
-	return nil
 }
 
 func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
@@ -245,9 +251,9 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["fec"].Set(slog.LevelInfo)
 	levels["send"].Set(slog.LevelDebug)
 	levels["receive"].Set(slog.LevelDebug)
-	levels["mhandler"].Set(slog.LevelInfo)
-	levels["metadata"].Set(slog.LevelInfo)
-	levels["file"].Set(slog.LevelDebug)
+	levels["mhandler"].Set(slog.LevelWarn)
+	levels["metadata"].Set(slog.LevelWarn)
+	levels["file"].Set(slog.LevelInfo)
 
 	return loggers
 }
