@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	merkletree "gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/merkle_tree"
@@ -8,14 +9,16 @@ import (
 )
 
 func (f *file) MetadataPacket(manifestHash [32]byte) *packet.Metadata {
+	size := make([]uint8, 8)
+	binary.NativeEndian.PutUint64(size, f.size)
 	return &packet.Metadata{
-		ManifestHash: manifestHash,
-		Hash:         [32]byte(f.mt.Root()),
-		HashExtra:    [32]byte{},
-		Size:         f.size,
-		MTDepth:      f.mt.Depth(),
+		ManifestHash:      manifestHash,
+		DataHash:          [32]byte(f.mt.Root()),
+		ExtraMetadataHash: [32]byte{},
 		Data: &packet.FileMetadata{
-			Name: f.name,
+			MerkleTreeDepth: f.mt.Depth(),
+			Size:            size,
+			Name:            f.name,
 		},
 	}
 }
@@ -71,13 +74,12 @@ func (f *file) BlobPacket(index uint32) ([]packet.Data, error) {
 
 	for i := 0; i < len(data); i += maxDataSize {
 		pkts = append(pkts, packet.Data{
-			FileHash:   [32]byte(f.mt.Root()),
-			BlobHash:   [32]byte(f.chunks[index].Hash()),
-			BlobID:     index,
-			BlobOffset: f.chunks[index].Offset(),
-			BlobLen:    uint32(len(data)),
-			PacketID:   uint32(i / maxDataSize),
-			Data:       data[i:min(i+maxDataSize, len(data))],
+			RootHash:    [32]byte(f.mt.Root()),
+			LeafHash:    [32]byte(f.chunks[index].Hash()),
+			LeafIndex:   index,
+			BlobOffset:  f.chunks[index].Offset(),
+			PacketIndex: uint32(i / maxDataSize),
+			Data:        data[i:min(i+maxDataSize, len(data))],
 		})
 	}
 

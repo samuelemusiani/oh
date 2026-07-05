@@ -33,15 +33,15 @@ func (c *Client) handleMetadata(m *packet.Metadata) error {
 	}
 
 	for _, existing := range c.metadataBuff[m.ManifestHash] {
-		if existing.Hash == m.Hash {
-			c.l["metadata"].Debug("Received duplicate metadata packet", "hash", htos(m.Hash))
+		if existing.DataHash == m.DataHash {
+			c.l["metadata"].Debug("Received duplicate metadata packet", "hash", htos(m.DataHash))
 			c.metadataBuffMutex.Unlock()
 			return nil // Ignore duplicate metadata packets
 		}
 	}
 
 	c.metadataBuff[m.ManifestHash] = append(c.metadataBuff[m.ManifestHash], m)
-	c.l["metadata"].Debug("Received metadata packet", "hash", htos(m.Hash), "manifest_hash", htos(m.ManifestHash))
+	c.l["metadata"].Debug("Received metadata packet", "hash", htos(m.DataHash), "manifest_hash", htos(m.ManifestHash))
 
 	// Check if we have received all metadata packets for this advertisement
 
@@ -53,7 +53,7 @@ func (c *Client) handleMetadata(m *packet.Metadata) error {
 	c.metadataBuffMutex.Unlock()
 
 	slices.SortFunc(tmp, func(a, b packet.Metadata) int {
-		return slices.Compare(a.Hash[:], b.Hash[:])
+		return slices.Compare(a.DataHash[:], b.DataHash[:])
 	})
 	for i := range tmp {
 		tmp[i].ManifestHash = [32]byte{} // Clear manifest hash
@@ -91,7 +91,7 @@ func (c *Client) handleMetadata(m *packet.Metadata) error {
 	// New Metadata packets are valid request the file data
 	go func() {
 		for _, m := range tmp {
-			c.filesToRequest <- m.Hash
+			c.filesToRequest <- m.DataHash
 		}
 	}()
 

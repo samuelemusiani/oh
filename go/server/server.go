@@ -198,8 +198,8 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 	case packet.MessageTypeMetadata:
 		s.l.Debug("Received metadata packet")
 		return nil
-	case packet.MessageTypeRequest:
-		req, ok := msg.MSG.(*packet.Request)
+	case packet.MessageTypeRequestLeaves:
+		req, ok := msg.MSG.(*packet.RequestLeaves)
 		if !ok {
 			panic("message type is request but message is not of type *packet.Request")
 		}
@@ -215,7 +215,7 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 	}
 }
 
-func (s *Server) handleRequest(req *packet.Request, src net.IP) error {
+func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 	rh := hex.EncodeToString(req.Hash[:])
 	s.l.Debug("Received request packet", "hash", rh)
 

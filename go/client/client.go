@@ -166,10 +166,9 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 
 	case packet.MessageTypeMetadata:
 		mtd := msg.MSG.(*packet.Metadata)
-		h := htos(mtd.Hash)
-		c.l["mhandler"].Info("Received metadata packet", "hash", h, "size", mtd.Size)
+		h := htos(mtd.DataHash)
+		c.l["mhandler"].Info("Received metadata packet", "hash", h)
 
-		// s.sendCh <- s.RequestPacket(mtd.Hash)
 		err := c.handleMetadata(mtd)
 		if err != nil {
 			return fmt.Errorf("error handling metadata: %w", err)
@@ -177,31 +176,30 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 
 	case packet.MessageTypeData:
 		data := msg.MSG.(*packet.Data)
-		fh := htos(data.FileHash)
-		bh := htos(data.BlobHash)
-		c.l["mhandler"].Info("Received data packet", "file_hash", fh, "blob_hash", bh, "blob_id", data.BlobID, "packet_id", data.PacketID)
+		fh := htos(data.RootHash)
+		bh := htos(data.LeafHash)
+		c.l["mhandler"].Info("Received data packet", "file_hash", fh, "blob_hash", bh, "blob_id", data.LeafIndex, "packet_id", data.PacketIndex)
 
 		c.metadataBuffMutex.Lock()
 		c.filesMapMutex.Lock()
-		f, ok := c.filesMap[data.FileHash]
+		f, ok := c.filesMap[data.RootHash]
 		if !ok {
-			err := c.prepareFile(data.FileHash)
+			err := c.prepareFile(data.RootHash)
 			if err != nil {
 				c.metadataBuffMutex.Unlock()
 				c.filesMapMutex.Unlock()
 				return fmt.Errorf("error preparing file: %w", err)
 			}
-			f = c.filesMap[data.FileHash]
+			f = c.filesMap[data.RootHash]
 		}
 		c.metadataBuffMutex.Unlock()
 		c.filesMapMutex.Unlock()
 
 		f.chunkChan <- chunk{
-			chunkHash:   data.BlobHash,
-			chunkID:     data.BlobID,
+			chunkHash:   data.LeafHash,
+			chunkID:     data.LeafIndex,
 			chunkOffset: data.BlobOffset,
-			chunkLen:    data.BlobLen,
-			packetIndex: data.PacketID,
+			packetIndex: data.PacketIndex,
 			data:        data.Data,
 		}
 
@@ -250,7 +248,7 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["global"].Set(slog.LevelDebug)
 	levels["fec"].Set(slog.LevelInfo)
 	levels["send"].Set(slog.LevelDebug)
-	levels["receive"].Set(slog.LevelDebug)
+	levels["receive"].Set(slog.LevelWarn)
 	levels["mhandler"].Set(slog.LevelWarn)
 	levels["metadata"].Set(slog.LevelWarn)
 	levels["file"].Set(slog.LevelInfo)

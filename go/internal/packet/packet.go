@@ -12,11 +12,16 @@ type messageType uint8
 const (
 	MessageTypeAdvertisement messageType = iota
 	MessageTypeMetadata
-	MessageTypeRequest
+	MessageTypeRequestLeaves
+	MessageTypeRequestLeaf
 	MessageTypeData
+	MessageTypeMerkleTree
+	MessageTypeStreamPoll  // NOT IMPLEMENTED
+	MessageTypeStreamState // NOT IMPLEMENTED
+	MessageTypeFeedbackRequest
+	MessageTypeFeedbackFeedback
 
-	FlagFEC = 1 << 0
-
+	// TODO: Calculate this based on MTU
 	MaxPayloadSize = 1024
 )
 
@@ -30,9 +35,6 @@ type GlobalHeader struct {
 	Version uint8
 	// Type is the type of the message
 	Type messageType
-
-	// Length is the length of the payload in bytes
-	Length uint16
 }
 
 type MessageWithSrc struct {
@@ -52,14 +54,13 @@ func WritePacket(msg Message) ([]byte, error) {
 		return nil, fmt.Errorf("error encoding message: %w", err)
 	}
 
-	if len(buff) > 1<<16 {
+	if len(buff) > MaxPayloadSize {
 		return nil, fmt.Errorf("payload too large: %d bytes (max %d bytes)", len(buff), MaxPayloadSize)
 	}
 
 	hdr := GlobalHeader{
 		Version: 1,
 		Type:    msg.Type(),
-		Length:  uint16(len(buff)),
 	}
 
 	w := bytes.NewBuffer(nil)
@@ -75,6 +76,13 @@ func WritePacket(msg Message) ([]byte, error) {
 }
 
 func ReadPacket(buff []byte) (Message, error) {
+	if len(buff) < sizeOfGlobalHeader {
+		return nil, fmt.Errorf("buffer too small to contain global header: %d bytes", len(buff))
+	}
+	if len(buff) > MaxPayloadSize+sizeOfGlobalHeader {
+		return nil, fmt.Errorf("buffer too large: %d bytes (max %d bytes)", len(buff), MaxPayloadSize+sizeOfGlobalHeader)
+	}
+
 	r := bytes.NewReader(buff)
 	var hdr GlobalHeader
 	if err := binary.Read(r, binary.BigEndian, &hdr); err != nil {
@@ -90,7 +98,7 @@ func ReadPacket(buff []byte) (Message, error) {
 		return nil, fmt.Errorf("unknown message type: %d", hdr.Type)
 	}
 	msg := constructor()
-	remainingBuff := buff[sizeOfGlobalHeader:max(sizeOfGlobalHeader+int(hdr.Length), len(buff))]
+	remainingBuff := buff[sizeOfGlobalHeader:]
 	if err := msg.Decode(remainingBuff); err != nil {
 		return nil, fmt.Errorf("error decoding message type %d: %w", msg.Type(), err)
 	}
@@ -101,6 +109,6 @@ func ReadPacket(buff []byte) (Message, error) {
 var messageRegistry = map[messageType]func() Message{
 	MessageTypeAdvertisement: func() Message { return &Advertisement{} },
 	MessageTypeMetadata:      func() Message { return &Metadata{} },
-	MessageTypeRequest:       func() Message { return &Request{} },
+	MessageTypeRequestLeaves: func() Message { return &RequestLeaves{} },
 	MessageTypeData:          func() Message { return &Data{} },
 }

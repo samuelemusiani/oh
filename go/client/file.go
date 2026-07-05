@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -23,7 +24,6 @@ type chunk struct {
 	chunkHash   [32]byte
 	chunkID     uint32
 	chunkOffset uint64
-	chunkLen    uint32
 	packetIndex uint32
 
 	data []byte
@@ -98,7 +98,7 @@ func (c *Client) prepareFile(hf [32]byte) error {
 mloop:
 	for k, m := range c.metadataBuff {
 		for _, md := range m {
-			if md.Hash == hf {
+			if md.DataHash == hf {
 				c.l["file"].Debug("found metadata for file", "file_hash", htos(hf), "manifest_hash", htos(k))
 				fileStruct.metadataHash = k
 				metadata = md
@@ -112,12 +112,12 @@ mloop:
 		panic("metadata for file not found, this should never happen")
 	}
 
-	fName := fileNameFromMetadata(metadata)
-	fPath := path.Join(c.dir, fName)
+	fileData := fileDataFromMetata(metadata)
+	fPath := path.Join(c.dir, fileData.Name)
 
 	// Create file with the size from metadata
 	var err error
-	fileStruct.mmapFile, err = c.createFile(fPath, metadata.Size)
+	fileStruct.mmapFile, err = c.createFile(fPath, binary.NativeEndian.Uint64(fileData.Size))
 	if err != nil {
 		if errors.Is(err, ErrFileExists) {
 			c.l["file"].Debug("file already exists, skipping", "file_hash", hf, "path", fPath)
@@ -159,13 +159,13 @@ func (*Client) createFile(path string, size uint64) (*mmap.File, error) {
 	return mmapFile, nil
 }
 
-func fileNameFromMetadata(m *packet.Metadata) string {
+func fileDataFromMetata(m *packet.Metadata) *packet.FileMetadata {
 	fm, ok := m.Data.(*packet.FileMetadata)
 	if !ok {
 		panic("metadata is not of type FileMetadata, this should never happen")
 	}
 
-	return fm.Name
+	return fm
 }
 
 func (c *Client) chunkHandlerForFile(hf [32]byte) {
@@ -183,8 +183,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 	c.metadataBuffMutex.Lock()
 	for _, m := range c.metadataBuff[f.metadataHash] {
-		if m.Hash == hf {
-			totalSize = m.Size
+		if m.DataHash == hf {
+			totalSize = binary.NativeEndian.Uint64(fileDataFromMetata(m).Size)
 			break
 		}
 	}
@@ -194,7 +194,6 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 		hash     [32]byte
 		id       uint32
 		offset   uint64
-		len      uint32
 		complete bool
 	}
 
@@ -202,7 +201,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	chunkMap := make(map[uint32][]*chunk)
 
 	// Verify if we have all the packets for a chunk
-	verifyComplete := func(id, length uint32, hash [32]byte) (bool, error) {
+	verifyComplete := func(id uint32, hash [32]byte) (bool, error) {
 		possibleComplete := true
 		lowerNil := -1
 		highestChunk := -1
@@ -236,11 +235,6 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			}
 			totLen += uint32(len(c.data))
 			h.Write(c.data)
-		}
-
-		if totLen != length {
-			c.l["file"].Debug("chunk length mismatch", "file_hash", htos(hf), "chunk_id", id, "expected_len", length, "actual_len", totLen)
-			return false, nil
 		}
 
 		if !bytes.Equal(h.Sum(nil), hash[:]) {
@@ -303,12 +297,11 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				hash:   ch.chunkHash,
 				id:     ch.chunkID,
 				offset: ch.chunkOffset,
-				len:    ch.chunkLen,
 			}
 			chunkMeta[ch.chunkID] = mc
 		} else {
-			if mc.hash != ch.chunkHash || mc.len != ch.chunkLen || mc.id != ch.chunkID || mc.offset != ch.chunkOffset {
-				return fmt.Errorf("chunk metadata mismatch for chunk %d: expected hash %x and len %d, got hash %x and len %d", ch.chunkID, mc.hash, mc.len, ch.chunkHash, ch.chunkLen)
+			if mc.hash != ch.chunkHash || mc.id != ch.chunkID || mc.offset != ch.chunkOffset {
+				return fmt.Errorf("chunk metadata mismatch for chunk %d: expected hash %x, got hash %x", ch.chunkID, mc.hash, ch.chunkHash)
 			}
 		}
 
@@ -322,7 +315,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 		chunkMap[ch.chunkID][ch.packetIndex] = &ch
 
-		complete, err := verifyComplete(ch.chunkID, mc.len, mc.hash)
+		complete, err := verifyComplete(ch.chunkID, mc.hash)
 		if err != nil {
 			return fmt.Errorf("error verifying chunk %d: %w", ch.chunkID, err)
 		}
@@ -349,7 +342,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 		select {
 		case ch := <-c.filesMap[hf].chunkChan:
 			c.l["file"].Debug("received data packet for file", "file_hash", htos(hf))
-			c.l["file"].Debug("data info", "chunk_hash", htos(ch.chunkHash), "chunk_id", ch.chunkID, "chunk_len", ch.chunkLen, "packet_index", ch.packetIndex)
+			c.l["file"].Debug("data info", "chunk_hash", htos(ch.chunkHash), "chunk_id", ch.chunkID, "packet_index", ch.packetIndex)
 
 			timer.Reset(5 * time.Second)
 
@@ -384,7 +377,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			close(c.filesMap[hf].finished)
 			return
 		case <-timer.C:
-			c.l["file"].Debug("timeout waiting for chunks for file", "file_hash", hf)
+			c.l["file"].Debug("timeout waiting for chunks for file", "file_hash", htos(hf))
 			panic("not implemented yet: request missing chunks")
 			// TODO: request missing chunks
 			timer.Reset(5 * time.Second)
@@ -406,8 +399,8 @@ func (c *Client) merkleTreeForFile(hf [32]byte) (*merkletree.MerkleTree, error) 
 	mmapFile = f.mmapFile
 
 	for _, m := range c.metadataBuff[f.metadataHash] {
-		if m.Hash == hf {
-			mtDepth = m.MTDepth
+		if m.DataHash == hf {
+			mtDepth = fileDataFromMetata(m).MerkleTreeDepth
 			break
 		}
 	}

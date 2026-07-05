@@ -7,16 +7,20 @@ import (
 	"io"
 )
 
-type Request struct {
+type RequestLeaves struct {
+	// SHADOW: Reserved uint8
 	Hash [32]byte
 }
 
-func (a *Request) Type() messageType {
-	return MessageTypeRequest
+func (a *RequestLeaves) Type() messageType {
+	return MessageTypeRequestLeaves
 }
 
-func (a *Request) Encode() ([]byte, error) {
+func (a *RequestLeaves) Encode() ([]byte, error) {
 	buff := bytes.NewBuffer(nil)
+	if err := binary.Write(buff, binary.BigEndian, uint8(0)); err != nil {
+		return nil, fmt.Errorf("error encoding reserved byte: %w", err)
+	}
 	if err := binary.Write(buff, binary.BigEndian, a.Hash); err != nil {
 		return nil, fmt.Errorf("error encoding hash: %w", err)
 	}
@@ -24,8 +28,12 @@ func (a *Request) Encode() ([]byte, error) {
 	return buff.Bytes(), nil
 }
 
-func (a *Request) Decode(buff []byte) error {
+func (a *RequestLeaves) Decode(buff []byte) error {
 	r := bytes.NewReader(buff)
+	var reserved uint8
+	if err := binary.Read(r, binary.BigEndian, &reserved); err != nil {
+		return fmt.Errorf("error decoding reserved byte: %w", err)
+	}
 	if err := binary.Read(r, binary.BigEndian, &a.Hash); err != nil {
 		return fmt.Errorf("error decoding hash: %w", err)
 	}
@@ -36,3 +44,5 @@ func (a *Request) Decode(buff []byte) error {
 
 	return nil
 }
+
+// TODO: Request Leaf
