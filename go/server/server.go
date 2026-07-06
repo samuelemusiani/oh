@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync/atomic"
 	"time"
 
 	oh "gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go"
@@ -115,9 +116,45 @@ func (s *Server) sendLoop() {
 		panic(s.fecEncoder.Run(s.sendCh, fecSend))
 	}()
 
+	rateLimit := int64(100 / 8) // MB/s
+
+	printDataRate := true
+	var printBytesSent atomic.Uint64
+	if printDataRate {
+		intervalDatarate := 500 // ms
+		lastReset := time.Now()
+		go func() {
+			for {
+				if time.Since(lastReset) > time.Duration(intervalDatarate)*time.Millisecond {
+					mbit := float64(printBytesSent.Load()) / (1024 * 1024 * (float64(intervalDatarate) / 1000)) * 8
+					s.l.Info("data rate", "rate", fmt.Sprintf("%.2f Mbit/s", mbit), "rate2", fmt.Sprintf("%.2f MB/s", mbit/8))
+					printBytesSent.Store(0)
+					lastReset = time.Now()
+				}
+			}
+		}()
+	}
+
+	bytesSent := int64(0)
+	lastReset := time.Now()
 	// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
 	for {
 		data := <-fecSend
+		bytesSent += int64(len(data))
+		printBytesSent.Add(uint64(len(data))) // For data rate printing
+		mtPassed := time.Since(lastReset).Microseconds()
+		// Becuase we are using microseconds, we should count the 1e6 factor. But also we are measuring in
+		// Mega Bytes, so we should count the 1024*1024 factor. Becuase 1e6 ~= 1024*1024, we can just ignore
+		// the factors and use everything as is. This will result in a slightly lower rate than the
+		// specified rateLimit, but it is good enough for our purposes.
+		if bytesSent > rateLimit*mtPassed {
+			timeToWait := time.Duration((bytesSent-rateLimit*mtPassed)/rateLimit) * time.Microsecond
+			time.Sleep(timeToWait)
+		}
+		if time.Since(lastReset) > 1*time.Second {
+			bytesSent = 0
+			lastReset = time.Now()
+		}
 		err := s.multicastConn.Send(data)
 		if err != nil {
 			s.l.Error("error sending message", "error", err)
@@ -247,8 +284,6 @@ func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 			for _, pkt := range pkts {
 				s.sendCh <- &pkt
 			}
-
-			time.Sleep(1 * time.Millisecond) // Sleep a bit to avoid flooding the network
 		}
 	case hashTypeBlob:
 		s.l.Debug("Received request packet for blob hash", "hash", rh)
