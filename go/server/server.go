@@ -14,6 +14,10 @@ import (
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
+
+	// Profiling
+	"net/http"
+	_ "net/http/pprof"
 )
 
 const (
@@ -63,6 +67,10 @@ var (
 )
 
 func New(c oh.Config) (*Server, error) {
+	go func() {
+		panic(http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	m, err := internal.OpenMulticastConnection(c.Address(), c.Port(), c.Interface())
 	if err != nil {
 		return nil, fmt.Errorf("error opening multicast connection: %w", err)

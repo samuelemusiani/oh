@@ -11,6 +11,10 @@ import (
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
+
+	// Profiling
+	"net/http"
+	_ "net/http/pprof"
 )
 
 const (
@@ -44,6 +48,9 @@ type Client struct {
 }
 
 func New(c oh.Config) (*Client, error) {
+	go func() {
+		panic(http.ListenAndServe("localhost:6060", nil))
+	}()
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	m, err := internal.OpenMulticastConnection(c.Address(), c.Port(), c.Interface())
