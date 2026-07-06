@@ -116,7 +116,7 @@ func (s *Server) sendLoop() {
 		panic(s.fecEncoder.Run(s.sendCh, fecSend))
 	}()
 
-	rateLimit := int64(100 / 8) // MB/s
+	rateLimit := int64(400 / 8) // MB/s
 
 	printDataRate := true
 	var printBytesSent atomic.Uint64

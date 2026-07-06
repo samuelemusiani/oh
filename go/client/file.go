@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"log/slog"
 	"os"
 	"path"
@@ -170,9 +171,11 @@ func fileDataFromMetata(m *packet.Metadata) *packet.FileMetadata {
 }
 
 type chunkInfo struct {
-	hash     [32]byte
-	id       uint32
-	complete bool
+	hash               [32]byte
+	id                 uint32
+	complete           bool
+	currentRollingHash hash.Hash
+	lastPacketIndex    uint32
 }
 
 type chunkHandler struct {
@@ -199,6 +202,12 @@ type chunkHandler struct {
 	// Because we don't know the size of each chunk, we need to keep track of
 	// the offset of each chunk in the file.
 	chunksOffset map[uint32]uint64
+
+	// Slice of chunk IDs that we need to write to the file but we don't
+	// have the offset for yet. This can happen if we receive a chunk out of
+	// order, and we need to wait for the previous chunks to be written first
+	// or re-request missing chunks
+	chunksToWrite []uint32
 }
 
 func (ch *chunkHandler) findTotalSize(c *Client) {
@@ -217,58 +226,6 @@ func (ch *chunkHandler) findTotalSize(c *Client) {
 		}
 	}
 	c.metadataBuffMutex.Unlock()
-}
-
-// Verifies if a chunk is complete by checking if we have all the packets for
-// it and if the hash matches.
-func (ch *chunkHandler) verifyIfChunkIsComplete(id uint32, hash [32]byte) (bool, error) {
-	possibleComplete := true
-	lowerNil := -1
-	highestChunk := -1
-	// [ 0, nil, nil, 3, 4, nil, 6]
-	for i, c := range ch.dataMap[id] {
-		if c == nil {
-			if lowerNil == -1 {
-				lowerNil = i
-			} else {
-				lowerNil = min(lowerNil, i)
-			}
-			continue
-		} else if lowerNil != -1 {
-			possibleComplete = false
-			break
-		}
-		if uint32(i) != c.packetIndex {
-			possibleComplete = false
-			break
-		}
-		highestChunk = max(highestChunk, i)
-	}
-
-	if !possibleComplete {
-		return false, nil
-	}
-
-	// if complete, check if we have the complete chunk. Total len and hash should match
-	totLen := uint32(0)
-	h := hashFunc()
-	for i := range highestChunk + 1 {
-		c := ch.dataMap[id][i]
-		if c == nil {
-			panic(fmt.Sprintf("chunk %d is complete but packet %d is missing", id, i))
-		}
-		totLen += uint32(len(c.data))
-		h.Write(c.data)
-	}
-
-	if !bytes.Equal(h.Sum(nil), hash[:]) {
-		ch.l.Debug("chunk hash mismatch", "file_hash", htos(ch.fileHash), "chunk_id", id, "expected_hash", htos(hash), "actual_hash", htos([32]byte(h.Sum(nil))))
-		return false, nil
-	}
-
-	ch.dataMap[id] = ch.dataMap[id][:highestChunk+1] // Trim the slice to the actual size
-
-	return true, nil
 }
 
 // Writes a complete chunk to the file. It expects the chunk to be complet
@@ -295,6 +252,8 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 
 	offset, ok := ch.chunksOffset[id]
 	if !ok {
+		ch.chunksToWrite = append(ch.chunksToWrite, id)
+		return nil
 		// If we don't have an offset for this chunk, we need to calculate it
 		// TODO: We cannot panic, we have to delay the writing of this chunk until
 		// we have all the previous chunks and can calculate the offset.
@@ -319,7 +278,6 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 	// Offset for the next chunk
 	ch.chunksOffset[id+1] = offset
 
-	// TODO: delete the chunk from the dataMap to free memory
 	delete(ch.dataMap, id)
 	delete(ch.chunksInfo, id)
 
@@ -332,8 +290,10 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 	mc, ok := ch.chunksInfo[data.chunkID]
 	if !ok {
 		mc = &chunkInfo{
-			hash: data.chunkHash,
-			id:   data.chunkID,
+			hash:               data.chunkHash,
+			id:                 data.chunkID,
+			currentRollingHash: hashFunc(),
+			lastPacketIndex:    0,
 		}
 		ch.chunksInfo[data.chunkID] = mc
 	} else {
@@ -352,20 +312,28 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 
 	ch.dataMap[data.chunkID][data.packetIndex] = &data
 
-	complete, err := ch.verifyIfChunkIsComplete(data.chunkID, mc.hash)
-	if err != nil {
-		return fmt.Errorf("error verifying chunk %d: %w", data.chunkID, err)
+	for i := mc.lastPacketIndex; i < uint32(len(ch.dataMap[data.chunkID])); i++ {
+		if ch.dataMap[data.chunkID][i] == nil {
+			mc.lastPacketIndex = uint32(i)
+			break
+		}
+		mc.currentRollingHash.Write(ch.dataMap[data.chunkID][i].data)
+		mc.lastPacketIndex = uint32(i + 1)
 	}
 
-	if !complete {
+	// Verify if chunk is complete.
+	if !bytes.Equal(mc.currentRollingHash.Sum(nil), mc.hash[:]) {
+		ch.l.Debug("chunk hash mismatch", "file_hash", htos(ch.fileHash), "chunk_id", data.chunkID, "expected_hash", htos(mc.hash), "actual_hash", htos([32]byte(mc.currentRollingHash.Sum(nil))))
 		return nil
 	}
+
+	ch.dataMap[data.chunkID] = ch.dataMap[data.chunkID][:mc.lastPacketIndex] // Trim the slice to the actual size
 
 	ch.l.Debug("chunk complete", "file_hash", htos(ch.fileHash), "chunk_id", data.chunkID, "chunk_hash", htos(data.chunkHash))
 	ch.chunksInfo[data.chunkID].complete = true
 
 	// Write chunk to file
-	err = ch.writeChunk(c, data.chunkID)
+	err := ch.writeChunk(c, data.chunkID)
 	if err != nil {
 		return fmt.Errorf("error writing chunk %d to file: %w", data.chunkID, err)
 	}
@@ -430,6 +398,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			return
 		case <-cHandler.timer.C:
 			c.l["file"].Debug("timeout waiting for chunks for file", "file_hash", htos(hf))
+			fmt.Println("chunks to write:", cHandler.chunksToWrite)
 			panic("not implemented yet: request missing chunks")
 			// TODO: request missing chunks
 			cHandler.timer.Reset(5 * time.Second)
