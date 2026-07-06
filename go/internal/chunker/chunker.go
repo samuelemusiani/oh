@@ -5,6 +5,10 @@ import (
 	"io"
 )
 
+const (
+	MaxChunkSize = 1024 * 4
+)
+
 // A Chunk represents a chunk of data that has an hash associated with it
 type Chunk struct {
 	hash   []byte
@@ -31,7 +35,7 @@ func (c *Chunker) ChunkFile(r io.ReaderAt) ([]*Chunk, error) {
 	// the file into chunks. For now, we just split the file into fixed-size chunks
 	// of 1024 bytes and hash each chunk.
 
-	size := 1024 * 4
+	size := MaxChunkSize
 	chunks := make([]*Chunk, 0)
 
 	for {

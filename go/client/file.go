@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"codeberg.org/go-mmap/mmap"
+	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
 	merkletree "gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/merkle_tree"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
 )
@@ -227,7 +228,11 @@ func (ch *chunkHandler) verifyIfChunkIsComplete(id uint32, hash [32]byte) (bool,
 	// [ 0, nil, nil, 3, 4, nil, 6]
 	for i, c := range ch.dataMap[id] {
 		if c == nil {
-			lowerNil = min(lowerNil, i)
+			if lowerNil == -1 {
+				lowerNil = i
+			} else {
+				lowerNil = min(lowerNil, i)
+			}
 			continue
 		} else if lowerNil != -1 {
 			possibleComplete = false
@@ -338,7 +343,7 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 	}
 
 	if _, ok := ch.dataMap[data.chunkID]; !ok {
-		ch.dataMap[data.chunkID] = make([]*dataInChunk, 1024) // TODO: too small?
+		ch.dataMap[data.chunkID] = make([]*dataInChunk, chunker.MaxChunkSize)
 	}
 	if data.packetIndex >= uint32(len(ch.dataMap[data.chunkID])) {
 		// TODO: We should expand the slice and keep same order. For the future
