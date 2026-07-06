@@ -130,6 +130,7 @@ func (s *Server) sendLoop() {
 					s.l.Info("data rate", "rate", fmt.Sprintf("%.2f Mbit/s", mbit), "rate2", fmt.Sprintf("%.2f MB/s", mbit/8))
 					printBytesSent.Store(0)
 					lastReset = time.Now()
+					time.Sleep(time.Duration(intervalDatarate) * time.Millisecond)
 				}
 			}
 		}()
