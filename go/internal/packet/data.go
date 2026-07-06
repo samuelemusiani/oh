@@ -16,13 +16,6 @@ type Data struct {
 	// BlobIndex is the index of the blob in the file
 	LeafIndex uint32
 
-	// BlobOffset is the offset of the blob in the file
-	// NOTE: We don't acctually need this, we could calculate it if we had received
-	// all the previous blobs. But since this would mean a bit of buffering on the
-	// client side, we will just send it with the data packet.
-	// TODO: REMOVE THIS
-	BlobOffset uint64
-
 	// PacketIndex is the index of the packet in the leaf that we are sending
 	PacketIndex uint32
 
@@ -47,9 +40,6 @@ func (d *Data) Encode() ([]byte, error) {
 	}
 	if err := binary.Write(buff, binary.BigEndian, d.LeafIndex); err != nil {
 		return nil, fmt.Errorf("error encoding blob id: %w", err)
-	}
-	if err := binary.Write(buff, binary.BigEndian, d.BlobOffset); err != nil {
-		return nil, fmt.Errorf("error encoding blob offset: %w", err)
 	}
 	if err := binary.Write(buff, binary.BigEndian, d.PacketIndex); err != nil {
 		return nil, fmt.Errorf("error encoding packet id: %w", err)
@@ -81,9 +71,6 @@ func (d *Data) Decode(buff []byte) error {
 	}
 	if err := binary.Read(r, binary.BigEndian, &d.LeafIndex); err != nil {
 		return fmt.Errorf("error decoding blob id: %w", err)
-	}
-	if err := binary.Read(r, binary.BigEndian, &d.BlobOffset); err != nil {
-		return fmt.Errorf("error decoding blob offset: %w", err)
 	}
 	if err := binary.Read(r, binary.BigEndian, &d.PacketIndex); err != nil {
 		return fmt.Errorf("error decoding packet id: %w", err)

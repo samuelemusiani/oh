@@ -195,10 +195,9 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 		c.metadataBuffMutex.Unlock()
 		c.filesMapMutex.Unlock()
 
-		f.chunkChan <- chunk{
+		f.dataChan <- dataInChunk{
 			chunkHash:   data.LeafHash,
 			chunkID:     data.LeafIndex,
-			chunkOffset: data.BlobOffset,
 			packetIndex: data.PacketIndex,
 			data:        data.Data,
 		}

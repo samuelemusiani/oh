@@ -77,7 +77,6 @@ func (f *file) BlobPacket(index uint32) ([]packet.Data, error) {
 			RootHash:    [32]byte(f.mt.Root()),
 			LeafHash:    [32]byte(f.chunks[index].Hash()),
 			LeafIndex:   index,
-			BlobOffset:  f.chunks[index].Offset(),
 			PacketIndex: uint32(i / maxDataSize),
 			Data:        data[i:min(i+maxDataSize, len(data))],
 		})
