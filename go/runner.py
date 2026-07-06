@@ -35,8 +35,8 @@ BINARY_SRC  = "./cmd/oh.go"
 DEFAULT_CLIENT_DIR = "/tmp/mftp-received"
 
 # Random file generation defaults
-GEN_FILE_COUNT   = 5
-GEN_FILE_MAX_BYTES = 1024 * 4 * 1024
+GEN_FILE_COUNT   = 2
+GEN_FILE_MAX_BYTES = 1024 * 1024 * 512
 GEN_FILE_STRICY = False # generate files with exactly GEN_FILE_MAX_BYTES if True, otherwise random sizes up to that limit
 
 GEN_FILENAME_LENGTH = 8
@@ -164,7 +164,7 @@ def generate_random_files(count: int = GEN_FILE_COUNT) -> tuple[str, list[str]]:
         if GEN_FILE_STRICY:
             size = GEN_FILE_MAX_BYTES
         else:
-            size = random.randint(1, GEN_FILE_MAX_BYTES)
+            size = random.randint(int(GEN_FILE_MAX_BYTES* 80/100), GEN_FILE_MAX_BYTES)
 
         with open(path, "wb") as f:
             f.write(os.urandom(size))
@@ -301,7 +301,7 @@ def cmd_start_socat(args):
     ns    = NS_SERVER   if side == "server" else NS_CLIENT
 
     socat_cmd = f"socat TCP-LISTEN:{from_port},reuseaddr,fork EXEC:\"ip netns exec {ns} socat STDIO TCP4\\:127.0.0.1\\:{to_port}\""
-    info(f"Forwarding localhost:{from_port} → {NS_SERVER}:127.0.0.1:{to_port}")
+    info(f"Forwarding localhost:{from_port} → {ns}:127.0.0.1:{to_port}")
     info(f"Running: {socat_cmd}")
     try:
         proc = subprocess.Popen(socat_cmd, shell=True)
