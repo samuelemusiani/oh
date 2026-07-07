@@ -52,12 +52,12 @@ func (s *Server) openFiles(paths []string) error {
 		}
 
 		for j, c := range f.chunks {
-			if _, ok := s.hashLookup[[32]byte(c.Hash())]; ok {
-				panic(fmt.Sprintf("duplicate chunk hash %x for file %s", c.Hash(), f.path))
+			if e, ok := s.hashLookup[[32]byte(c.Hash())]; ok {
+				panic(fmt.Sprintf("duplicate chunk hash %x for file %s type %d", c.Hash(), f.path, e.t))
 			}
 
 			s.hashLookup[[32]byte(c.Hash())] = hashLookupEntry{
-				t:         hashTypeBlob,
+				t:         hashTypeChunk,
 				fileIndex: i,
 				blobIndex: j,
 			}
@@ -88,21 +88,23 @@ func (s *Server) openFile(path string) (*file, error) {
 	}
 
 	leafs := merkletree.NextPowerOfTwo(uint32(len(chunks)))
-	if leafs == 1 {
-		// We need at least 2 leafs to avoid creating a MT with only one leaf
-		// because it will then have the same root hash as the leaf, which will
-		// cause conflicts in hash lookups.
-		leafs = 2
-	}
 	mt, err := merkletree.NewMerkleTree(leafs, func(leaf uint32) ([]byte, error) {
+		h := hashFunc()
+		h.Reset()
+		h.Write([]byte{0})
 		if leaf >= uint32(len(chunks)) {
 			// If the leaf index is greater than the number of chunks, we return the
 			// hash of an empty chunk
-			h := hashFunc()
-			h.Reset()
 			return h.Sum(nil), nil
 		}
-		return chunks[leaf].Hash(), nil
+		// We cannot use the Hash() func for the chunk because we need to appen 0
+		// to the beginning of it.
+		d, err := chunks[leaf].Data(mmapFile)
+		if err != nil {
+			return nil, fmt.Errorf("could not read chunk data: %w", err)
+		}
+		h.Write(d)
+		return h.Sum(nil), nil
 	}, hashFunc())
 	if err != nil {
 		return nil, fmt.Errorf("could not create Merkle tree: %w", err)

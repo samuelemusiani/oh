@@ -59,15 +59,15 @@ func (s *Server) AdvertisementPacket() (*packet.Advertisement, error) {
 	}, nil
 }
 
-func (f *file) BlobPacket(index uint32) ([]packet.Data, error) {
+func (f *file) ChunkPacket(index uint32) ([]packet.Data, error) {
 	maxDataSize := 512
 	if index >= uint32(len(f.chunks)) {
-		return nil, fmt.Errorf("invalid blob index %d for file %s", index, f.name)
+		return nil, fmt.Errorf("invalid chunk index %d for file %s", index, f.name)
 	}
 
 	data, err := f.chunks[index].Data(f.mmapFile)
 	if err != nil {
-		return nil, fmt.Errorf("error getting data for blob %d of file %s: %w", index, f.name, err)
+		return nil, fmt.Errorf("error getting data for chunk %d of file %s: %w", index, f.name, err)
 	}
 
 	pkts := make([]packet.Data, 0)
@@ -75,7 +75,7 @@ func (f *file) BlobPacket(index uint32) ([]packet.Data, error) {
 	for i := 0; i < len(data); i += maxDataSize {
 		pkts = append(pkts, packet.Data{
 			RootHash:    [32]byte(f.mt.Root()),
-			LeafHash:    [32]byte(f.chunks[index].Hash()),
+			LeafHash:    [32]byte(f.mt.LeafHash(index)),
 			LeafIndex:   index,
 			PacketIndex: uint32(i / maxDataSize),
 			Data:        data[i:min(i+maxDataSize, len(data))],

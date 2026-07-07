@@ -41,6 +41,8 @@ type Server struct {
 	receiveCh chan packet.MessageWithSrc
 
 	l *slog.Logger
+
+	currentlySending *[32]byte
 }
 
 type hashType uint8
@@ -59,7 +61,7 @@ type hashLookupEntry struct {
 const (
 	hashTypeManifest hashType = iota
 	hashTypeFile
-	hashTypeBlob
+	hashTypeChunk
 )
 
 var (
@@ -265,6 +267,12 @@ func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 	rh := hex.EncodeToString(req.Hash[:])
 	s.l.Debug("Received request packet", "hash", rh)
 
+	if s.currentlySending != nil && *s.currentlySending == req.Hash {
+		s.l.Debug("Already sending requested hash, ignoring request", "hash", rh)
+
+		return nil
+	}
+
 	entry, ok := s.hashLookup[req.Hash]
 	if !ok {
 		s.l.Debug("Received request packet for unknown hash", "hash", rh)
@@ -275,27 +283,45 @@ func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 	switch entry.t {
 	case hashTypeManifest:
 		s.l.Debug("Received request packet for manifest hash", "hash", rh)
+		s.currentlySending = &req.Hash
 		// We need to send the metadata packets for all files
-		for _, f := range s.files {
-			s.sendCh <- f.MetadataPacket(*s.currentManifestHash)
-		}
-	case hashTypeFile:
-		s.l.Debug("Received request packet for file hash", "hash", rh)
-		file := s.files[entry.fileIndex]
-		for i := range file.chunks {
-			s.l.Debug("Constructing blob packets for file", "file", file.name, "blob_index", i)
-			pkts, err := file.BlobPacket(uint32(i))
-			if err != nil {
-				return fmt.Errorf("error creating blob packet for file %s: %w", file.name, err)
+		go func() {
+			for _, f := range s.files {
+				s.sendCh <- f.MetadataPacket(*s.currentManifestHash)
 			}
 
-			s.l.Debug("Sending blob packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
-			for _, pkt := range pkts {
-				s.sendCh <- &pkt
+			s.currentlySending = nil
+		}()
+	case hashTypeFile:
+		s.l.Debug("Received request packet for file hash", "hash", rh)
+		s.currentlySending = &req.Hash
+		sendFile := func(file *file) error {
+			for i := range file.chunks {
+				s.l.Debug("Constructing chunk packets for file", "file", file.name, "blob_index", i)
+				pkts, err := file.ChunkPacket(uint32(i))
+				if err != nil {
+					return fmt.Errorf("error creating blob packet for file %s: %w", file.name, err)
+				}
+
+				s.l.Debug("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
+				for _, pkt := range pkts {
+					s.sendCh <- &pkt
+				}
 			}
+
+			return nil
 		}
-	case hashTypeBlob:
-		s.l.Debug("Received request packet for blob hash", "hash", rh)
+
+		file := s.files[entry.fileIndex]
+		go func() {
+			err := sendFile(file)
+			if err != nil {
+				s.l.Error("error sending file", "file", file.name, "error", err)
+			}
+			s.currentlySending = nil
+		}()
+	case hashTypeChunk:
+		s.l.Debug("Received request packet for chunk hash", "hash", rh)
 		panic("not implemented yet")
 	default:
 		panic("unknown hash type")

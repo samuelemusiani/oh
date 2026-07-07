@@ -30,12 +30,6 @@ func NewMerkleTree(leafs uint32, leafHash func(leaf uint32) ([]byte, error), h h
 	mt := &MerkleTree{}
 	mt.t = make([]Node, 2*leafs-1)
 
-	hash := func(data []byte) []byte {
-		h.Reset()
-		h.Write(data)
-		return h.Sum(nil)
-	}
-
 	// Set leaf nodes
 	for i := range leafs {
 		hashBytes, err := leafHash(i)
@@ -46,14 +40,22 @@ func NewMerkleTree(leafs uint32, leafHash func(leaf uint32) ([]byte, error), h h
 	}
 
 	// Compute the internal nodes
-	depth := bits.Len(uint(leafs - 1))
-	for d := depth - 1; d >= 0; d-- {
+	depth := mt.Depth()
+	if depth < 2 {
+		return mt, nil
+	}
+
+	for d := int16(depth - 2); d >= 0; d-- {
 		nodesAtLevel := 1 << d
 		for n := nodesAtLevel - 1; n >= 0; n-- {
 			pos := nodesAtLevel - 1 + n
 			lChildHash := mt.t[2*pos+1].hash
 			rChildHash := mt.t[2*pos+2].hash
-			mt.t[pos] = Node{hash: hash(append(lChildHash[:], rChildHash[:]...))}
+			h.Reset()
+			h.Write([]byte{uint8(int16(depth) - 1 - d)})
+			h.Write(lChildHash[:])
+			h.Write(rChildHash[:])
+			mt.t[pos] = Node{hash: h.Sum(nil)}
 		}
 	}
 
@@ -78,5 +80,20 @@ func (n *Node) Hash() []byte {
 
 func (mt *MerkleTree) Depth() uint8 {
 	leafs := (len(mt.t) + 1) / 2
-	return uint8(bits.Len(uint(leafs - 1)))
+	return uint8(bits.Len(uint(leafs)))
+}
+
+func (mt *MerkleTree) LeafHash(leaf uint32) []byte {
+	leafs := (len(mt.t) + 1) / 2
+	if leaf >= uint32(leafs) {
+		panic(fmt.Sprintf("leaf index %d out of bounds for Merkle tree with %d leafs", leaf, leafs))
+	}
+	return mt.t[uint32(len(mt.t))-uint32(leafs)+leaf].hash
+}
+
+func LeafsFromDepth(depth uint8) uint32 {
+	if depth == 0 {
+		return 0
+	}
+	return 1 << (depth - 1)
 }

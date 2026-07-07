@@ -256,9 +256,9 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["global"].Set(slog.LevelDebug)
 	levels["fec"].Set(slog.LevelInfo)
 	levels["send"].Set(slog.LevelDebug)
-	levels["receive"].Set(slog.LevelWarn)
+	levels["receive"].Set(slog.LevelInfo)
 	levels["mhandler"].Set(slog.LevelWarn)
-	levels["metadata"].Set(slog.LevelWarn)
+	levels["metadata"].Set(slog.LevelInfo)
 	levels["file"].Set(slog.LevelInfo)
 	levels["request"].Set(slog.LevelInfo)
 

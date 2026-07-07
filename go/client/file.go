@@ -295,6 +295,9 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 			currentRollingHash: hashFunc(),
 			lastPacketIndex:    0,
 		}
+		// Because the hash that we are receiving is a leaf hash, it has the
+		// depth (0) prepended to it
+		mc.currentRollingHash.Write([]byte{0})
 		ch.chunksInfo[data.chunkID] = mc
 	} else {
 		if mc.hash != data.chunkHash || mc.id != data.chunkID {
@@ -426,7 +429,7 @@ func (c *Client) merkleTreeForFile(hf [32]byte) (*merkletree.MerkleTree, error) 
 		}
 	}
 	if mtDepth == 0 {
-		panic("metadata for file not found, this should never happen")
+		panic(fmt.Sprintf("Merkle tree depth not found for file %x, this should never happen", hf))
 	}
 
 	c.metadataBuffMutex.Unlock()
@@ -437,25 +440,30 @@ func (c *Client) merkleTreeForFile(hf [32]byte) (*merkletree.MerkleTree, error) 
 		return nil, fmt.Errorf("could not chunk file: %w", err)
 	}
 
-	expectedLeafs := uint32(1) << mtDepth
+	expectedLeafs := merkletree.LeafsFromDepth(mtDepth)
 	calculatedLeafs := merkletree.NextPowerOfTwo(uint32(len(chunks)))
-	if calculatedLeafs == 1 {
-		calculatedLeafs = 2 // Merkle tree must have at least 2 leafs
-	}
 	if expectedLeafs != calculatedLeafs {
 		c.l["file"].Debug("Merkle tree depth does not match number of chunks", "file_hash", htos(hf), "expected_leafs", expectedLeafs, "calculated_leafs", calculatedLeafs)
 		return nil, nil
 	}
 
 	mt, err := merkletree.NewMerkleTree(calculatedLeafs, func(leaf uint32) ([]byte, error) {
+		h := hashFunc()
+		h.Reset()
+		h.Write([]byte{0})
 		if leaf >= uint32(len(chunks)) {
 			// If the leaf index is greater than the number of chunks, we return the
 			// hash of an empty chunk
-			h := hashFunc()
-			h.Reset()
 			return h.Sum(nil), nil
 		}
-		return chunks[leaf].Hash(), nil
+		// We cannot use the Hash() func for the chunk because we need to appen 0
+		// to the beginning of it.
+		d, err := chunks[leaf].Data(f.mmapFile)
+		if err != nil {
+			return nil, fmt.Errorf("could not read chunk data: %w", err)
+		}
+		h.Write(d)
+		return h.Sum(nil), nil
 	}, hashFunc())
 	if err != nil {
 		return nil, fmt.Errorf("could not create Merkle tree: %w", err)
