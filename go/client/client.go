@@ -238,6 +238,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"mhandler": {},
 		"metadata": {},
 		"file":     {},
+		"request":  {},
 	}
 
 	loggers := map[string]*slog.Logger{
@@ -248,6 +249,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"mhandler": makeLogger("mhandler", levels["mhandler"]),
 		"metadata": makeLogger("metadata", levels["metadata"]),
 		"file":     makeLogger("file", levels["file"]),
+		"request":  makeLogger("request", levels["request"]),
 	}
 
 	// Change level at any time, takes effect immediately:
@@ -258,6 +260,7 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["mhandler"].Set(slog.LevelWarn)
 	levels["metadata"].Set(slog.LevelWarn)
 	levels["file"].Set(slog.LevelInfo)
+	levels["request"].Set(slog.LevelInfo)
 
 	return loggers
 }
