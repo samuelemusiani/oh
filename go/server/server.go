@@ -267,10 +267,21 @@ func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 	rh := hex.EncodeToString(req.Hash[:])
 	s.l.Debug("Received request packet", "hash", rh)
 
-	if s.currentlySending != nil && *s.currentlySending == req.Hash {
-		s.l.Debug("Already sending requested hash, ignoring request", "hash", rh)
+	if s.currentlySending != nil {
+		if *s.currentlySending == req.Hash {
+			s.l.Debug("Already sending requested hash, ignoring request", "hash", rh)
 
-		return nil
+			return nil
+		} else {
+			// TODO: if we are seding and another request comes in,
+			// we could try to parallelize because we would achive better parallelization
+			// on the clients. But at the same time if we are handling too many requests at
+			// once we could overload the server. Find a sweet spot and queue other
+			// requests to be handled after the current one is done.
+
+			// For the moment we will just ignore the request if we are already sending another hash.
+			return nil
+		}
 	}
 
 	entry, ok := s.hashLookup[req.Hash]
