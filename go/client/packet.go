@@ -7,3 +7,10 @@ func (*Client) RequestLeavesPacket(hash [32]byte) *packet.RequestLeaves {
 		Hash: hash,
 	}
 }
+
+func (*Client) RequestLeafPacket(index uint32, rootHash [32]byte) *packet.RequestLeaf {
+	return &packet.RequestLeaf{
+		Index:    index,
+		RootHash: rootHash,
+	}
+}

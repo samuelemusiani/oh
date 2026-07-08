@@ -23,7 +23,8 @@ var (
 )
 
 const (
-	timeoutChunkRequest = 1 * time.Second
+	timeoutPartialChunkRequest = 1 * time.Second
+	timeoutMissingChunkRequest = 5 * time.Second
 )
 
 type dataInChunk struct {
@@ -61,7 +62,7 @@ func (c *Client) requestFiles(finish chan struct{}) {
 				c.l["request"].Error("error requesting file", "hash", f, "error", err)
 			}
 			atLeastOneFile = true
-		case <-time.After(5 * time.Second):
+		case <-time.After(2 * time.Second):
 			if !atLeastOneFile {
 				continue
 			}
@@ -270,6 +271,17 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 	offset, ok := ch.chunksOffset[id]
 	if !ok {
 		c.l["file"].Debug("chunk offset not found, adding to chunksToWrite", "file_hash", htos(ch.fileHash), "chunk_id", id)
+
+		if len(ch.chunksToWrite) == 0 || len(ch.chunksToWrite) > 0 && ch.chunksToWrite[len(ch.chunksToWrite)-1] != id-1 {
+			// We try to be fast by requesting the chunk again because we should
+			// have received them in order
+			if id == 0 {
+				panic("chunk id is 0, this should never happen")
+			}
+			go func() {
+				c.sendCh <- c.RequestLeafPacket(id-1, ch.fileHash)
+			}()
+		}
 		ch.chunksToWrite = append(ch.chunksToWrite, id)
 		return nil
 	}
@@ -326,7 +338,7 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 
 // Add a chunk to the chunkMap, verify if we have all the packets for it, if
 // so, write it to the file and mark it as complete
-func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
+func (ch *chunkHandler) addData(c *Client, data dataInChunk) error {
 	if _, ok := ch.writtenChunks[data.chunkID]; ok {
 		c.l["file"].Debug("chunk already written to file", "file_hash", htos(ch.fileHash), "chunk_id", data.chunkID)
 		return nil
@@ -339,7 +351,7 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 			id:                 data.chunkID,
 			currentRollingHash: hashFunc(),
 			lastPacketIndex:    0,
-			reRequest: time.AfterFunc(timeoutChunkRequest, func() {
+			reRequest: time.AfterFunc(timeoutPartialChunkRequest, func() {
 				ch.reRequest <- data.chunkID
 			}),
 		}
@@ -353,7 +365,7 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 		}
 	}
 
-	mc.reRequest.Reset(timeoutChunkRequest)
+	mc.reRequest.Reset(timeoutPartialChunkRequest)
 
 	if _, ok := ch.dataMap[data.chunkID]; !ok {
 		ch.dataMap[data.chunkID] = make([]*dataInChunk, chunker.MaxChunkSize)
@@ -424,7 +436,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				// the last chunk block and we finish it (?).
 				panic("if timer has fired we must have the chunksInfo")
 			}
-			chInfo.reRequest.Reset(timeoutChunkRequest * 2) // TODO: maybe an exponential backoff would be better
+			chInfo.reRequest.Reset(timeoutPartialChunkRequest * 2) // TODO: maybe an exponential backoff would be better
 			// We can request the chunk again, by hash :)
 			c.sendCh <- c.RequestLeavesPacket(chInfo.hash)
 		}
@@ -438,9 +450,9 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			c.l["file"].Debug("received data packet for file", "file_hash", htos(hf))
 			c.l["file"].Debug("data info", "chunk_hash", htos(dataChunk.chunkHash), "chunk_id", dataChunk.chunkID, "packet_index", dataChunk.packetIndex)
 
-			cHandler.timer.Reset(10 * time.Second)
+			cHandler.timer.Reset(timeoutMissingChunkRequest)
 
-			err := cHandler.addChunk(c, dataChunk)
+			err := cHandler.addData(c, dataChunk)
 			if err != nil {
 				c.l["file"].Error("error adding chunk for file", "file_hash", htos(hf), "error", err)
 			}
@@ -489,9 +501,37 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			// TODO: This probably requires only a sweep in the number of leafs (tree
 			// is balanced) and request all of them
 			c.l["file"].Debug("timeout waiting for chunks for file", "file_hash", htos(hf))
-			panic("not implemented yet: request missing chunks")
-			// TODO: request missing chunks
-			cHandler.timer.Reset(5 * time.Second)
+
+			var metadata *packet.Metadata
+			c.metadataBuffMutex.Lock()
+			f, ok := c.metadataBuff[file.metadataHash]
+			if !ok {
+				panic(fmt.Sprintf("file not found for hash %x, this should never happen", hf))
+			}
+
+			for _, m := range f {
+				if m.DataHash == hf {
+					metadata = m
+					break
+				}
+			}
+			if metadata == nil {
+				panic(fmt.Sprintf("metadata for file %x not found, this should never happen", hf))
+			}
+			c.metadataBuffMutex.Unlock()
+
+			// TODO: Try to be smart. We can probably the number of last leaves based
+			// on file size and chunk size. But for now we will just request all
+			// missing chunks up to the depth of the Merkle tree.
+			for i := range merkletree.LeafsFromDepth(fileDataFromMetata(metadata).MerkleTreeDepth) {
+				_, ok := cHandler.chunksInfo[uint32(i)]
+				if !ok {
+					c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
+					c.sendCh <- c.RequestLeafPacket(uint32(i), hf)
+				}
+			}
+
+			cHandler.timer.Reset(timeoutMissingChunkRequest)
 		}
 	}
 }

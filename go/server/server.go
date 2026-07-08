@@ -251,7 +251,19 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 		if !ok {
 			panic("message type is request but message is not of type *packet.Request")
 		}
-		err := s.handleRequest(req, msg.Src)
+		err := s.handleLeavesRequest(req, msg.Src)
+		if err != nil {
+			return fmt.Errorf("error handling request packet: %w", err)
+		}
+
+		return nil
+
+	case packet.MessageTypeRequestLeaf:
+		req, ok := msg.MSG.(*packet.RequestLeaf)
+		if !ok {
+			panic("message type is request but message is not of type *packet.Request")
+		}
+		err := s.handleLeafRequest(req, msg.Src)
 		if err != nil {
 			return fmt.Errorf("error handling request packet: %w", err)
 		}
@@ -263,7 +275,7 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 	}
 }
 
-func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
+func (s *Server) handleLeavesRequest(req *packet.RequestLeaves, src net.IP) error {
 	rh := hex.EncodeToString(req.Hash[:])
 	s.l.Debug("Received request packet", "hash", rh)
 
@@ -341,7 +353,54 @@ func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 			}
 		}()
 	default:
-		panic("unknown hash type")
+		panic(fmt.Sprintf("unknown hash type for request packet: %d %s", entry.t, rh))
+	}
+
+	return nil
+}
+
+func (s *Server) handleLeafRequest(req *packet.RequestLeaf, src net.IP) error {
+	rh := hex.EncodeToString(req.RootHash[:])
+
+	entry, ok := s.hashLookup[req.RootHash]
+	if !ok {
+		s.l.Debug("Received request packet for unknown hash", "hash", rh)
+
+		return nil
+	}
+
+	// TODO: limit number of concurrent requests, the server goes OOM :)
+
+	// TODO: for now we don't support sub-trees. So hash must be the manifest or
+	// a file hash.
+	switch entry.t {
+	case hashTypeManifest:
+		if uint32(len(s.files)) < req.Index {
+			panic(fmt.Sprintf("requested index %d is out of bounds for manifest with %d files", req.Index, len(s.files)))
+		}
+		go func() {
+			s.sendCh <- s.files[req.Index].MetadataPacket(*s.currentManifestHash)
+		}()
+	case hashTypeFile:
+		file := s.files[entry.fileIndex]
+		if uint32(len(file.chunks)) < req.Index {
+			// Because we don't advertise the number of chunks in the file, but only
+			// the depth of the Merkle tree, we can receive requests for chunks that
+			// don't exist. In this case we just ignore the request.
+			return nil
+		}
+		go func() {
+			pkts, err := file.ChunkPacket(req.Index)
+			if err != nil {
+				s.l.Error("error creating chunk packet", "file", file.name, "chunk_index", req.Index, "error", err)
+				return
+			}
+			for _, pkt := range pkts {
+				s.sendCh <- &pkt
+			}
+		}()
+	default:
+		panic(fmt.Sprintf("unknown hash type for request packet: %d %s", entry.t, rh))
 	}
 
 	return nil
