@@ -43,6 +43,9 @@ type Server struct {
 	l *slog.Logger
 
 	currentlySending *[32]byte
+
+	pendingLeafRequests       map[[32]byte]time.Time
+	numberPendingLeafRequests atomic.Int32
 }
 
 type hashType uint8
@@ -100,6 +103,8 @@ func New(c oh.Config) (*Server, error) {
 		receiveCh: make(chan packet.MessageWithSrc, 1024),
 
 		l: logger,
+
+		pendingLeafRequests: make(map[[32]byte]time.Time),
 	}, nil
 }
 
@@ -369,7 +374,20 @@ func (s *Server) handleLeafRequest(req *packet.RequestLeaf, src net.IP) error {
 		return nil
 	}
 
-	// TODO: limit number of concurrent requests, the server goes OOM :)
+	// Limit number of concurrent requests, the server goes OOM :)
+	if s.numberPendingLeafRequests.Load() > 2 {
+		return nil
+	}
+
+	pendingLeafRequestTime, ok := s.pendingLeafRequests[req.RootHash]
+	if ok && time.Since(pendingLeafRequestTime) < 5*time.Second {
+		s.l.Debug("Received request packet for hash that is already being sent", "hash", rh)
+
+		return nil
+	}
+
+	s.pendingLeafRequests[req.RootHash] = time.Now()
+	s.numberPendingLeafRequests.Add(1)
 
 	// TODO: for now we don't support sub-trees. So hash must be the manifest or
 	// a file hash.
@@ -379,6 +397,7 @@ func (s *Server) handleLeafRequest(req *packet.RequestLeaf, src net.IP) error {
 			panic(fmt.Sprintf("requested index %d is out of bounds for manifest with %d files", req.Index, len(s.files)))
 		}
 		go func() {
+			defer s.numberPendingLeafRequests.Add(-1)
 			s.sendCh <- s.files[req.Index].MetadataPacket(*s.currentManifestHash)
 		}()
 	case hashTypeFile:
@@ -390,6 +409,7 @@ func (s *Server) handleLeafRequest(req *packet.RequestLeaf, src net.IP) error {
 			return nil
 		}
 		go func() {
+			defer s.numberPendingLeafRequests.Add(-1)
 			pkts, err := file.ChunkPacket(req.Index)
 			if err != nil {
 				s.l.Error("error creating chunk packet", "file", file.name, "chunk_index", req.Index, "error", err)
