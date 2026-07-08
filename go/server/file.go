@@ -52,14 +52,15 @@ func (s *Server) openFiles(paths []string) error {
 		}
 
 		for j, c := range f.chunks {
-			if e, ok := s.hashLookup[[32]byte(c.Hash())]; ok {
+			lh := f.mt.LeafHash(uint32(j))
+			if e, ok := s.hashLookup[[32]byte(lh)]; ok {
 				panic(fmt.Sprintf("duplicate chunk hash %x for file %s type %d", c.Hash(), f.path, e.t))
 			}
 
-			s.hashLookup[[32]byte(c.Hash())] = hashLookupEntry{
-				t:         hashTypeChunk,
-				fileIndex: i,
-				blobIndex: j,
+			s.hashLookup[[32]byte(lh)] = hashLookupEntry{
+				t:          hashTypeChunk,
+				fileIndex:  i,
+				chunkIndex: j,
 			}
 		}
 	}

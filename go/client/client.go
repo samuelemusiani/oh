@@ -202,6 +202,10 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 		c.metadataBuffMutex.Unlock()
 		c.filesMapMutex.Unlock()
 
+		if f.isFinished {
+			return nil
+		}
+
 		f.dataChan <- dataInChunk{
 			chunkHash:   data.LeafHash,
 			chunkID:     data.LeafIndex,

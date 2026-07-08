@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"slices"
 	"time"
 
 	"codeberg.org/go-mmap/mmap"
@@ -19,6 +20,10 @@ import (
 
 var (
 	ErrFileExists = errors.New("file already exists")
+)
+
+const (
+	timeoutChunkRequest = 1 * time.Second
 )
 
 type dataInChunk struct {
@@ -38,7 +43,9 @@ type file struct {
 	// Channel to receive data packets for this file
 	dataChan chan dataInChunk
 
-	finished chan struct{}
+	// Because we cannot check if channel is closed :(
+	isFinished bool
+	finished   chan struct{}
 
 	mmapFile *mmap.File
 }
@@ -79,7 +86,7 @@ func (c *Client) requestFile(hf [32]byte) error {
 	c.metadataBuffMutex.Unlock()
 	c.filesMapMutex.Unlock()
 
-	c.sendCh <- c.RequestPacket(hf)
+	c.sendCh <- c.RequestLeavesPacket(hf)
 
 	<-c.filesMap[hf].finished
 
@@ -176,6 +183,9 @@ type chunkInfo struct {
 	complete           bool
 	currentRollingHash hash.Hash
 	lastPacketIndex    uint32
+
+	// Timer to re-request missing packets for this chunk
+	reRequest *time.Timer
 }
 
 type chunkHandler struct {
@@ -203,11 +213,18 @@ type chunkHandler struct {
 	// the offset of each chunk in the file.
 	chunksOffset map[uint32]uint64
 
+	// Map that stores all the written chunks
+	writtenChunks map[uint32]struct{}
+
 	// Slice of chunk IDs that we need to write to the file but we don't
 	// have the offset for yet. This can happen if we receive a chunk out of
 	// order, and we need to wait for the previous chunks to be written first
 	// or re-request missing chunks
 	chunksToWrite []uint32
+
+	// When a chunk is not complete, we need to request it again. This channel
+	// receives the chunk IDs that we need to request again.
+	reRequest chan uint32
 }
 
 func (ch *chunkHandler) findTotalSize(c *Client) {
@@ -233,10 +250,10 @@ func (ch *chunkHandler) findTotalSize(c *Client) {
 func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 	mc, ok := ch.chunksInfo[id]
 	if !ok {
-		return fmt.Errorf("chunk metadata not found for chunk %d", id)
+		panic(fmt.Sprintf("chunk metadata not found for chunk %d, this should never happen", id))
 	}
 	if !mc.complete {
-		return fmt.Errorf("chunk %d is not complete, cannot write to file", id)
+		panic(fmt.Sprintf("chunk %d is not complete, this should never happen", id))
 	}
 
 	var mmapFile *mmap.File
@@ -252,18 +269,15 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 
 	offset, ok := ch.chunksOffset[id]
 	if !ok {
+		c.l["file"].Debug("chunk offset not found, adding to chunksToWrite", "file_hash", htos(ch.fileHash), "chunk_id", id)
 		ch.chunksToWrite = append(ch.chunksToWrite, id)
 		return nil
-		// If we don't have an offset for this chunk, we need to calculate it
-		// TODO: We cannot panic, we have to delay the writing of this chunk until
-		// we have all the previous chunks and can calculate the offset.
-		panic(fmt.Sprintf("not implemented yet: calculate offset for chunk %d", id))
 	}
 	for i, chunk := range ch.dataMap[id] {
 		if chunk == nil {
-			return fmt.Errorf("chunk %d is complete but packet %d is missing", id, i)
+			panic(fmt.Sprintf("chunk %d is complete but packet %d is missing, this should never happen", id, i))
 		}
-		c.l["file"].Debug("writing chunk to file", "file_hash", htos(ch.fileHash), "chunk_id", id, "packet_index", i, "offset", offset, "len", len(chunk.data))
+		c.l["file"].Debug("writing packet of chunk to file", "file_hash", htos(ch.fileHash), "chunk_id", id, "packet_index", i, "offset", offset, "len", len(chunk.data))
 		n, err := mmapFile.WriteAt(chunk.data, int64(offset))
 		if err != nil {
 			return fmt.Errorf("error writing chunk %d packet %d to file: %w", id, i, err)
@@ -275,11 +289,37 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 		ch.totalWritten += uint64(len(chunk.data))
 	}
 
+	c.l["file"].Debug("chunk written to file", "file_hash", htos(ch.fileHash), "chunk_id", id, "offset", offset, "total_written", ch.totalWritten)
+
 	// Offset for the next chunk
 	ch.chunksOffset[id+1] = offset
 
+	ch.writtenChunks[id] = struct{}{}
 	delete(ch.dataMap, id)
 	delete(ch.chunksInfo, id)
+
+	if len(ch.chunksToWrite) > 0 {
+		// We need to check if we can write any of the chunks that we have in the
+		// chunksToWrite slice.
+		slices.Sort(ch.chunksToWrite)
+		if ch.chunksToWrite[0] < id {
+			return nil
+		}
+
+		if ch.chunksToWrite[0] == id {
+			// Just wrote this chunk, we can remove it from the slice
+			ch.chunksToWrite = ch.chunksToWrite[1:]
+		}
+
+		if ch.chunksToWrite[0] == id+1 {
+			nextChunkID := ch.chunksToWrite[0]
+			ch.chunksToWrite = ch.chunksToWrite[1:]
+			err := ch.writeChunk(c, nextChunkID)
+			if err != nil {
+				return fmt.Errorf("error writing chunk %d to file: %w", nextChunkID, err)
+			}
+		}
+	}
 
 	return nil
 }
@@ -287,6 +327,11 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 // Add a chunk to the chunkMap, verify if we have all the packets for it, if
 // so, write it to the file and mark it as complete
 func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
+	if _, ok := ch.writtenChunks[data.chunkID]; ok {
+		c.l["file"].Debug("chunk already written to file", "file_hash", htos(ch.fileHash), "chunk_id", data.chunkID)
+		return nil
+	}
+
 	mc, ok := ch.chunksInfo[data.chunkID]
 	if !ok {
 		mc = &chunkInfo{
@@ -294,6 +339,9 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 			id:                 data.chunkID,
 			currentRollingHash: hashFunc(),
 			lastPacketIndex:    0,
+			reRequest: time.AfterFunc(timeoutChunkRequest, func() {
+				ch.reRequest <- data.chunkID
+			}),
 		}
 		// Because the hash that we are receiving is a leaf hash, it has the
 		// depth (0) prepended to it
@@ -304,6 +352,8 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 			return fmt.Errorf("chunk metadata mismatch for chunk %d: expected hash %x, got hash %x", data.chunkID, mc.hash, data.chunkHash)
 		}
 	}
+
+	mc.reRequest.Reset(timeoutChunkRequest)
 
 	if _, ok := ch.dataMap[data.chunkID]; !ok {
 		ch.dataMap[data.chunkID] = make([]*dataInChunk, chunker.MaxChunkSize)
@@ -335,39 +385,60 @@ func (ch *chunkHandler) addChunk(c *Client, data dataInChunk) error {
 	ch.l.Debug("chunk complete", "file_hash", htos(ch.fileHash), "chunk_id", data.chunkID, "chunk_hash", htos(data.chunkHash))
 	ch.chunksInfo[data.chunkID].complete = true
 
+	ch.chunksInfo[data.chunkID].reRequest.Stop()
+
 	// Write chunk to file
 	err := ch.writeChunk(c, data.chunkID)
 	if err != nil {
 		return fmt.Errorf("error writing chunk %d to file: %w", data.chunkID, err)
 	}
-
-	c.l["file"].Debug("chunk written to file", "file_hash", htos(ch.fileHash), "chunk_id", data.chunkID, "chunk_hash", htos(data.chunkHash))
-
 	return nil
 }
 
 func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	c.l["file"].Debug("starting chunk handler for file", "file_hash", htos(hf))
 	cHandler := &chunkHandler{
-		l:            c.l["file"],
-		fileHash:     hf,
-		timer:        time.NewTimer(30 * time.Second),
-		chunksInfo:   make(map[uint32]*chunkInfo),
-		dataMap:      make(map[uint32][]*dataInChunk),
-		chunksOffset: make(map[uint32]uint64),
+		l:             c.l["file"],
+		fileHash:      hf,
+		timer:         time.NewTimer(30 * time.Second),
+		chunksInfo:    make(map[uint32]*chunkInfo),
+		dataMap:       make(map[uint32][]*dataInChunk),
+		chunksOffset:  make(map[uint32]uint64),
+		writtenChunks: make(map[uint32]struct{}),
+		reRequest:     make(chan uint32),
 	}
 
 	cHandler.chunksOffset[0] = 0 // First chunk always starts at offset 0
 
 	cHandler.findTotalSize(c)
 
+	// This can go in a separate routing
+	// TODO: Check if acceses on shared map can cause panics (probably :) )
+	go func() {
+		for {
+			chunkID := <-cHandler.reRequest
+			// We need to re-request a particular chunk
+			chInfo, ok := cHandler.chunksInfo[chunkID]
+			if !ok {
+				// TODO: check this. Maybe if time fires but in the meantime we receive
+				// the last chunk block and we finish it (?).
+				panic("if timer has fired we must have the chunksInfo")
+			}
+			chInfo.reRequest.Reset(timeoutChunkRequest * 2) // TODO: maybe an exponential backoff would be better
+			// We can request the chunk again, by hash :)
+			c.sendCh <- c.RequestLeavesPacket(chInfo.hash)
+		}
+	}()
+
+	file := c.filesMap[hf]
+
 	for {
 		select {
-		case dataChunk := <-c.filesMap[hf].dataChan:
+		case dataChunk := <-file.dataChan:
 			c.l["file"].Debug("received data packet for file", "file_hash", htos(hf))
 			c.l["file"].Debug("data info", "chunk_hash", htos(dataChunk.chunkHash), "chunk_id", dataChunk.chunkID, "packet_index", dataChunk.packetIndex)
 
-			cHandler.timer.Reset(5 * time.Second)
+			cHandler.timer.Reset(10 * time.Second)
 
 			err := cHandler.addChunk(c, dataChunk)
 			if err != nil {
@@ -397,11 +468,27 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 			// If we reach here, we have received all chunks for the file and the Merkle tree is complete
 			c.l["file"].Info("file download complete", "file_hash", htos(hf))
-			close(c.filesMap[hf].finished)
+
+			file.isFinished = true
+			close(file.finished)
+			select {
+			case <-file.dataChan:
+			// Drain the channel to avoid blocking the sender
+			default:
+			}
+			close(file.dataChan)
 			return
+
 		case <-cHandler.timer.C:
+			// This timer should fire when we receive up to k chunks but we need n chunks
+			// (where k < n) to complete the file. So basically it's used to request
+			// again the chunks that we completly didn't receive are at the end of
+			// the file. We should have another way to request missing chunks that
+			// are between received chunks
+
+			// TODO: This probably requires only a sweep in the number of leafs (tree
+			// is balanced) and request all of them
 			c.l["file"].Debug("timeout waiting for chunks for file", "file_hash", htos(hf))
-			fmt.Println("chunks to write:", cHandler.chunksToWrite)
 			panic("not implemented yet: request missing chunks")
 			// TODO: request missing chunks
 			cHandler.timer.Reset(5 * time.Second)

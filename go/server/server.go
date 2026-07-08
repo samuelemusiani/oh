@@ -54,8 +54,8 @@ type hashLookupEntry struct {
 	// Set only for file and blob hashes, to identify which file/blob the hash belongs to
 	fileIndex int
 
-	// Set only for blob hashes, to identify which blob the hash belongs to
-	blobIndex int
+	// Set only for chunk hashes, to identify which chunk the hash belongs to
+	chunkIndex int
 }
 
 const (
@@ -272,15 +272,6 @@ func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 			s.l.Debug("Already sending requested hash, ignoring request", "hash", rh)
 
 			return nil
-		} else {
-			// TODO: if we are seding and another request comes in,
-			// we could try to parallelize because we would achive better parallelization
-			// on the clients. But at the same time if we are handling too many requests at
-			// once we could overload the server. Find a sweet spot and queue other
-			// requests to be handled after the current one is done.
-
-			// For the moment we will just ignore the request if we are already sending another hash.
-			return nil
 		}
 	}
 
@@ -288,6 +279,12 @@ func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 	if !ok {
 		s.l.Debug("Received request packet for unknown hash", "hash", rh)
 
+		return nil
+	}
+
+	if s.currentlySending != nil && entry.t != hashTypeChunk {
+		// For now we only allow concurrent requests for chunks
+		// TODO: change later (?)
 		return nil
 	}
 
@@ -332,8 +329,17 @@ func (s *Server) handleRequest(req *packet.RequestLeaves, src net.IP) error {
 			s.currentlySending = nil
 		}()
 	case hashTypeChunk:
-		s.l.Debug("Received request packet for chunk hash", "hash", rh)
-		panic("not implemented yet")
+		s.l.Debug("Received request packet for chunk hash", "hash", rh, "file_index", entry.fileIndex, "chunk_index", entry.chunkIndex)
+		go func() {
+			pkts, err := s.files[entry.fileIndex].ChunkPacket(uint32(entry.chunkIndex))
+			if err != nil {
+				s.l.Error("error creating chunk packet", "file_index", entry.fileIndex, "blob_index", entry.chunkIndex, "error", err)
+				return
+			}
+			for _, pkt := range pkts {
+				s.sendCh <- &pkt
+			}
+		}()
 	default:
 		panic("unknown hash type")
 	}

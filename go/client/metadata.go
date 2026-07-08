@@ -19,7 +19,7 @@ func (c *Client) handleAdvertisement(a *packet.Advertisement) error {
 	c.metadataBuff[a.Hash] = make([]*packet.Metadata, 0)
 	c.metadataBuffMutex.Unlock()
 	// Send request for metadata packets
-	c.sendCh <- c.RequestPacket(a.Hash)
+	c.sendCh <- c.RequestLeavesPacket(a.Hash)
 
 	return nil
 }
