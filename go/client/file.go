@@ -280,9 +280,17 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 			}
 			go func() {
 				c.sendCh <- c.RequestLeafPacket(id-1, ch.fileHash)
+				c.l["file"].Debug("requesting previous chunk for file", "file_hash", htos(ch.fileHash), "chunk_id", id-1)
 			}()
 		}
+		// TODO: A sorted set would be much better here probably
+		if slices.Contains(ch.chunksToWrite, id) {
+			// We already have this chunk in the chunksToWrite slice, so we don't
+			// need to add it again
+			return nil
+		}
 		ch.chunksToWrite = append(ch.chunksToWrite, id)
+		slices.Sort(ch.chunksToWrite)
 		return nil
 	}
 	for i, chunk := range ch.dataMap[id] {
@@ -436,7 +444,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				// the last chunk block and we finish it (?).
 				panic("if timer has fired we must have the chunksInfo")
 			}
-			chInfo.reRequest.Reset(timeoutPartialChunkRequest * 2) // TODO: maybe an exponential backoff would be better
+			chInfo.reRequest.Reset(timeoutPartialChunkRequest) // TODO: maybe an exponential backoff would be better
+			c.l["file"].Debug("re-requesting chunk for file", "file_hash", htos(hf), "chunk_id", chunkID, "chunk_hash", htos(chInfo.hash))
 			// We can request the chunk again, by hash :)
 			c.sendCh <- c.RequestLeavesPacket(chInfo.hash)
 		}
@@ -458,7 +467,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			}
 
 			if cHandler.totalWritten < cHandler.totalSize {
-				c.l["file"].Debug("file not complete yet", "file_hash", htos(hf), "total_written", cHandler.totalWritten, "total_size", cHandler.totalSize)
+				c.l["file"].Debug("file not complete yet", "file_hash", htos(hf), "total_written", cHandler.totalWritten, "total_size", cHandler.totalSize, "chunksToWrite", cHandler.chunksToWrite)
 				continue
 			}
 
@@ -525,10 +534,16 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			// missing chunks up to the depth of the Merkle tree.
 			for i := range merkletree.LeafsFromDepth(fileDataFromMetata(metadata).MerkleTreeDepth) {
 				_, ok := cHandler.chunksInfo[uint32(i)]
-				if !ok {
-					c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
-					c.sendCh <- c.RequestLeafPacket(uint32(i), hf)
+				if ok {
+					continue
 				}
+				_, ok = cHandler.writtenChunks[uint32(i)]
+				if ok {
+					continue
+				}
+
+				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
+				c.sendCh <- c.RequestLeafPacket(uint32(i), hf)
 			}
 
 			cHandler.timer.Reset(timeoutMissingChunkRequest)
