@@ -110,5 +110,6 @@ var messageRegistry = map[messageType]func() Message{
 	MessageTypeAdvertisement: func() Message { return &Advertisement{} },
 	MessageTypeMetadata:      func() Message { return &Metadata{} },
 	MessageTypeRequestLeaves: func() Message { return &RequestLeaves{} },
+	MessageTypeRequestLeaf:   func() Message { return &RequestLeaf{} },
 	MessageTypeData:          func() Message { return &Data{} },
 }
