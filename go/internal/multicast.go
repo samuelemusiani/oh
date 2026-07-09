@@ -17,8 +17,6 @@ const BUFFER_SIZE = 8 * 1024 * 1024
 type Multicast struct {
 	conn *ipv4.PacketConn
 	addr net.UDPAddr
-
-	myAddrs map[string]struct{}
 }
 
 func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast, error) {
@@ -99,6 +97,12 @@ func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast
 		return nil, fmt.Errorf("error setting TTL: %w", err)
 	}
 
+	err = p.SetMulticastLoopback(false)
+	if err != nil {
+		_ = p.Close()
+		return nil, fmt.Errorf("error setting multicast loopback: %w", err)
+	}
+
 	err = p.SetMulticastInterface(netIface)
 	if err != nil {
 		_ = p.Close()
@@ -106,9 +110,8 @@ func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast
 	}
 
 	return &Multicast{
-		conn:    p,
-		addr:    net.UDPAddr{IP: addr, Port: int(port)},
-		myAddrs: ipSet,
+		conn: p,
+		addr: net.UDPAddr{IP: addr, Port: int(port)},
 	}, nil
 }
 
@@ -123,23 +126,16 @@ func (m *Multicast) Send(data []byte) error {
 }
 
 func (m *Multicast) Receive(buf []byte) (n int, src net.IP, err error) {
-loop:
-	for {
-		n, cm, _, err := m.conn.ReadFrom(buf)
-		if err != nil {
-			return 0, nil, fmt.Errorf("error receiving data: %w", err)
-		}
-
-		if cm == nil || cm.Dst == nil {
-			return 0, nil, fmt.Errorf("error receiving data: control message is nil or missing destination address")
-		}
-
-		if _, ok := m.myAddrs[cm.Src.String()]; ok {
-			continue loop
-		}
-
-		return n, cm.Src, nil
+	n, cm, _, err := m.conn.ReadFrom(buf)
+	if err != nil {
+		return 0, nil, fmt.Errorf("error receiving data: %w", err)
 	}
+
+	if cm == nil || cm.Dst == nil {
+		return 0, nil, fmt.Errorf("error receiving data: control message is nil or missing destination address")
+	}
+
+	return n, cm.Src, nil
 }
 
 func (m *Multicast) SendBatch(data [][]byte) error {
@@ -157,4 +153,33 @@ func (m *Multicast) SendBatch(data [][]byte) error {
 	}
 
 	return nil
+}
+
+func (m *Multicast) ReceiveBatch(buff [][]byte) (n int, srcs []net.IP, err error) {
+	msgs := make([]ipv4.Message, len(buff))
+	for i := range buff {
+		msgs[i] = ipv4.Message{
+			Buffers: make([][]byte, 1),
+		}
+		msgs[i].Buffers[0] = buff[i]
+	}
+	n, err = m.conn.ReadBatch(msgs, 0) // TODO: Check flags
+	if err != nil {
+		return 0, nil, fmt.Errorf("error receiving batch: %w", err)
+	}
+
+	// fmt.Println("Received batch of", n, "messages")
+
+	for i := 0; i < n; i++ {
+		buff[i] = buff[i][:msgs[i].N]
+	}
+
+	srcs = make([]net.IP, n)
+	for i := 0; i < n; i++ {
+		if msgs[i].Addr == nil {
+			return 0, nil, fmt.Errorf("error receiving batch: control message is nil or missing destination address")
+		}
+		srcs[i] = msgs[i].Addr.(*net.UDPAddr).IP
+	}
+	return n, srcs, nil
 }
