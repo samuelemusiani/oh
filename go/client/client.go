@@ -105,18 +105,59 @@ func (c *Client) ReceiveFiles(dir string) error {
 
 func (c *Client) sendLoop() {
 	// Clients are not expected to send any FEC blocks, we can ignore the construction
+
+	batchSize := 64
+	batch := make([][]byte, 0, batchSize)
+
+	sendBatch := func() {
+		if len(batch) == 0 {
+			return
+		}
+		err := c.multicastConn.SendBatch(batch)
+		if err != nil {
+			c.l["send"].Error("error sending batch", "error", err)
+		}
+		batch = batch[:0]
+	}
+
+	var packetsSent atomic.Int64
+
+	var leavesRequested atomic.Int64
+	var leafRequested atomic.Int64
+
+	go func() {
+		for {
+			fmt.Println("Packets sent:", packetsSent.Load(), "leaves", leavesRequested.Load(), "leaf", leafRequested.Load())
+			packetsSent.Store(0)
+			leavesRequested.Store(0)
+			leafRequested.Store(0)
+			time.Sleep(1 * time.Second)
+		}
+	}()
+
 	for {
 		// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
-		msg := <-c.sendCh
-		data, err := packet.WritePacket(msg)
-		if err != nil {
-			c.l["send"].Error("error encoding message", "error", err)
-			continue
-		}
+		select {
+		case msg := <-c.sendCh:
+			switch msg.Type() {
+			case packet.MessageTypeRequestLeaves:
+				leavesRequested.Add(1)
+			case packet.MessageTypeRequestLeaf:
+				leafRequested.Add(1)
+			}
+			data, err := packet.WritePacket(msg)
+			if err != nil {
+				c.l["send"].Error("error encoding message", "error", err)
+				continue
+			}
+			packetsSent.Add(1)
 
-		if err := c.multicastConn.Send(data); err != nil {
-			c.l["send"].Error("error sending message", "error", err)
-			continue
+			batch = append(batch, data)
+			if len(batch) >= batchSize {
+				sendBatch()
+			}
+		case <-time.After(20 * time.Millisecond):
+			sendBatch()
 		}
 	}
 }
@@ -125,18 +166,6 @@ func (c *Client) receiveLoop() {
 	tmpPacketBuff := make(chan internal.PacketWithSrc)
 	go func() {
 		panic(c.fecDecoder.Run(tmpPacketBuff, c.receiveCh))
-	}()
-
-	var batchSizeCount atomic.Int64
-	var batchSizeReceived atomic.Int64
-
-	go func() {
-		for {
-			fmt.Println("Batch size average:", float64(batchSizeReceived.Load())/float64(batchSizeCount.Load()))
-			batchSizeCount.Store(0)
-			batchSizeReceived.Store(0)
-			time.Sleep(1 * time.Second)
-		}
 	}()
 
 	batchSize := 32
@@ -150,9 +179,6 @@ func (c *Client) receiveLoop() {
 			c.l["receive"].Error("error receiving message", "error", err)
 			continue
 		}
-		batchSizeCount.Add(1)
-		batchSizeReceived.Add(int64(n))
-
 		for i := range n {
 			copyBuff := make([]byte, len(buff[i]))
 			copy(copyBuff, buff[i])

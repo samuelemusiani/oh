@@ -242,17 +242,17 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 	if !ok {
 		c.l["file"].Debug("chunk offset not found, adding to chunksToWrite", "file_hash", htos(ch.fileHash), "chunk_id", id)
 
-		if len(ch.chunksToWrite) == 0 || len(ch.chunksToWrite) > 0 && ch.chunksToWrite[len(ch.chunksToWrite)-1] != id-1 {
-			// We try to be fast by requesting the chunk again because we should
-			// have received them in order
-			if id == 0 {
-				panic("chunk id is 0, this should never happen")
-			}
-			go func() {
-				c.sendCh <- c.RequestLeafPacket(id-1, ch.fileHash)
-				c.l["file"].Debug("requesting previous chunk for file", "file_hash", htos(ch.fileHash), "chunk_id", id-1)
-			}()
-		}
+		// if len(ch.chunksToWrite) == 0 || len(ch.chunksToWrite) > 0 && ch.chunksToWrite[len(ch.chunksToWrite)-1] != id-1 {
+		// 	// We try to be fast by requesting the chunk again because we should
+		// 	// have received them in order
+		// 	if id == 0 {
+		// 		panic("chunk id is 0, this should never happen")
+		// 	}
+		// 	go func() {
+		// 		c.sendCh <- c.RequestLeafPacket(id-1, ch.fileHash)
+		// 		c.l["file"].Debug("requesting previous chunk for file", "file_hash", htos(ch.fileHash), "chunk_id", id-1)
+		// 	}()
+		// }
 		// TODO: A sorted set would be much better here probably
 		if slices.Contains(ch.chunksToWrite, id) {
 			// We already have this chunk in the chunksToWrite slice, so we don't
@@ -421,7 +421,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			c.l["file"].Debug("re-requesting chunk for file", "file_hash", htos(hf), "chunk_id", chunkID, "chunk_hash", htos(chInfo.hash))
 			// We can request the chunk again, by hash :)
 
-			go c.scheduler.reRequest(hf)
+			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
 
