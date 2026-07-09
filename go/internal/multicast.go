@@ -17,6 +17,9 @@ const BUFFER_SIZE = 8 * 1024 * 1024
 type Multicast struct {
 	conn *ipv4.PacketConn
 	addr net.UDPAddr
+
+	msgs []ipv4.Message
+	srcs []net.IP
 }
 
 func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast, error) {
@@ -155,28 +158,34 @@ func (m *Multicast) SendBatch(data [][]byte) error {
 }
 
 func (m *Multicast) ReceiveBatch(buff [][]byte) (n int, srcs []net.IP, err error) {
-	msgs := make([]ipv4.Message, len(buff))
-	for i := range buff {
-		msgs[i] = ipv4.Message{
-			Buffers: make([][]byte, 1),
+	if m.msgs == nil || len(m.msgs) != len(buff) {
+		m.msgs = make([]ipv4.Message, len(buff))
+		for i := range buff {
+			m.msgs[i] = ipv4.Message{
+				Buffers: make([][]byte, 1),
+			}
 		}
-		msgs[i].Buffers[0] = buff[i]
 	}
-	n, err = m.conn.ReadBatch(msgs, 0) // TODO: Check flags
+
+	for i := range buff {
+		m.msgs[i].Buffers[0] = buff[i]
+	}
+
+	n, err = m.conn.ReadBatch(m.msgs, 0) // TODO: Check flags
 	if err != nil {
 		return 0, nil, fmt.Errorf("error receiving batch: %w", err)
 	}
 
 	for i := 0; i < n; i++ {
-		buff[i] = buff[i][:msgs[i].N]
+		buff[i] = buff[i][:m.msgs[i].N]
 	}
 
 	srcs = make([]net.IP, n)
 	for i := 0; i < n; i++ {
-		if msgs[i].Addr == nil {
+		if m.msgs[i].Addr == nil {
 			return 0, nil, fmt.Errorf("error receiving batch: control message is nil or missing destination address")
 		}
-		srcs[i] = msgs[i].Addr.(*net.UDPAddr).IP
+		srcs[i] = m.msgs[i].Addr.(*net.UDPAddr).IP
 	}
 	return n, srcs, nil
 }
