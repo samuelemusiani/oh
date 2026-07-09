@@ -94,7 +94,7 @@ func New(c oh.Config) (*Server, error) {
 	return &Server{
 		config:        c,
 		multicastConn: m,
-		chunker:       chunker.NewChunker(hashFunc()),
+		chunker:       chunker.NewChunker(hashFunc),
 		fecEncoder:    internal.NewFECEncoder(internal.NewFEC(fecType), logger),
 
 		hashLookup: make(map[[32]byte]hashLookupEntry),

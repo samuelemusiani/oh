@@ -18,15 +18,16 @@ type Chunk struct {
 
 // Chunker is responsible for splitting data into chunker.Chunks
 type Chunker struct {
-	h hash.Hash
+	hashFunc func() hash.Hash
 }
 
-func NewChunker(h hash.Hash) *Chunker {
+func NewChunker(hashFunc func() hash.Hash) *Chunker {
+	h := hashFunc()
 	if h.Size() != 32 {
 		panic("unsupported hash function: only 32-byte hashes are supported")
 	}
 	return &Chunker{
-		h: h,
+		hashFunc: hashFunc,
 	}
 }
 
@@ -34,6 +35,8 @@ func (c *Chunker) ChunkFile(r io.ReaderAt) ([]*Chunk, error) {
 	// TODO: This function should use a Content Defined Chunking algorithm to split
 	// the file into chunks. For now, we just split the file into fixed-size chunks
 	// of 1024 bytes and hash each chunk.
+
+	h := c.hashFunc()
 
 	size := MaxChunkSize
 	chunks := make([]*Chunk, 0)
@@ -48,10 +51,10 @@ func (c *Chunker) ChunkFile(r io.ReaderAt) ([]*Chunk, error) {
 			break
 		}
 
-		c.h.Reset()
-		c.h.Write(buf[:n])
+		h.Reset()
+		h.Write(buf[:n])
 		chunks = append(chunks, &Chunk{
-			hash:   c.h.Sum(nil),
+			hash:   h.Sum(nil),
 			offset: uint64(len(chunks) * size),
 			length: uint64(n),
 		})

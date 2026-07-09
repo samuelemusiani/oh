@@ -66,7 +66,7 @@ func New(c oh.Config) (*Client, error) {
 		config:        c,
 		multicastConn: m,
 		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), l["fec"]),
-		chunker:       chunker.NewChunker(hashFunc()),
+		chunker:       chunker.NewChunker(hashFunc),
 
 		metadataBuff: make(map[[32]byte][]*packet.Metadata),
 		filesMap:     make(map[[32]byte]*file),
