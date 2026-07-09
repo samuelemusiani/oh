@@ -531,6 +531,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
 				go c.scheduler.requestLeafByIndex(hf, uint32(i))
+				break
 			}
 
 			cHandler.timer.Reset(timeoutMissingChunkRequest)
