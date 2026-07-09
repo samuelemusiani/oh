@@ -61,42 +61,60 @@ func (s *scheduler) run(finish chan struct{}) {
 	manifestsToRequest := make(chan [32]byte)
 	manifestRequestorChan := make(chan [32]byte)
 	manifestCompleteChan := make(chan [32]byte)
-	go s.requestor(manifestsToRequest, manifestRequestorChan, manifestCompleteChan)
+	manifestCheckFinish := make(chan struct{})
+	manifestFinish := make(chan bool)
+	go s.requestor(manifestsToRequest, manifestRequestorChan, manifestCompleteChan, manifestCheckFinish, manifestFinish)
 
 	filesToRequest := make(chan [32]byte)
 	filesRequestorChan := make(chan [32]byte)
-	go s.requestor(filesToRequest, filesRequestorChan, s.fileCompleteChan)
+	filesCheckFinish := make(chan struct{})
+	filesFinish := make(chan bool)
+	go s.requestor(filesToRequest, filesRequestorChan, s.fileCompleteChan, filesCheckFinish, filesFinish)
 
-	for msg := range s.rec {
-		switch msg.t {
-		case schedulerMessageTypeManifest:
-			manifestMsg := msg.m.(schedulerManifestMessage)
-			go func() {
-				manifestsToRequest <- manifestMsg.h
-			}()
-		case schedulerMessageTypeMetadata:
-			manifestRequestorChan <- msg.m.(schedulerMetadataMessage).h
+	for {
+		select {
+		case msg := <-s.rec:
+			switch msg.t {
+			case schedulerMessageTypeManifest:
+				manifestMsg := msg.m.(schedulerManifestMessage)
+				go func() {
+					manifestsToRequest <- manifestMsg.h
+				}()
+			case schedulerMessageTypeMetadata:
+				manifestRequestorChan <- msg.m.(schedulerMetadataMessage).h
 
-		case schedulerMessageTypeRequestFiles:
-			h := msg.m.(schedulerRequestFilesMessage).h
-			manifestCompleteChan <- h
-			s.client.metadataBuffMutex.Lock()
-			metas := s.client.metadataBuff[h]
-			for _, m := range metas {
-				// the file requestor will consume all of the data, this is not
-				// really blocking
-				filesToRequest <- m.DataHash
+			case schedulerMessageTypeRequestFiles:
+				h := msg.m.(schedulerRequestFilesMessage).h
+				manifestCompleteChan <- h
+				s.client.metadataBuffMutex.Lock()
+				metas := s.client.metadataBuff[h]
+				for _, m := range metas {
+					// the file requestor will consume all of the data, this is not
+					// really blocking
+					filesToRequest <- m.DataHash
+				}
+				s.client.metadataBuffMutex.Unlock()
+
+			case schedulerMessageTypeData:
+				// we only need to send the rootHash becuase the file requestor does not
+				// know about leaves hashes of files. Only the chunks re-requestor will know
+				filesRequestorChan <- msg.m.(schedulerDataMessage).rootHash
+			case schedulerMessageTypeMerkleTree:
+				panic("merkle tree message type not implemented")
+			default:
+				panic("unknown message type")
 			}
-			s.client.metadataBuffMutex.Unlock()
-
-		case schedulerMessageTypeData:
-			// we only need to send the rootHash becuase the file requestor does not
-			// know about leaves hashes of files. Only the chunks re-requestor will know
-			filesRequestorChan <- msg.m.(schedulerDataMessage).rootHash
-		case schedulerMessageTypeMerkleTree:
-			panic("merkle tree message type not implemented")
-		default:
-			panic("unknown message type")
+		case <-time.After(2 * time.Second):
+			s.client.l["scheduler"].Debug("Checking if manifest and files requestors are finished")
+			filesCheckFinish <- struct{}{}
+			if <-filesFinish {
+				manifestCheckFinish <- struct{}{}
+				if <-manifestFinish {
+					s.client.l["scheduler"].Info("Scheduler finished")
+					finish <- struct{}{}
+					return
+				}
+			}
 		}
 	}
 }
@@ -124,7 +142,7 @@ func (s *scheduler) signalFileComplete(h [32]byte) {
 	s.fileCompleteChan <- h
 }
 
-func (s *scheduler) requestor(toRequest chan [32]byte, requestorChan chan [32]byte, completeChan chan [32]byte) {
+func (s *scheduler) requestor(toRequest chan [32]byte, requestorChan chan [32]byte, completeChan chan [32]byte, checkFinish chan struct{}, finish chan bool) {
 	reRequestTime := 5 * time.Second
 	timer := time.NewTimer(1 * time.Second) // Set to max duration
 	timer.Stop()                            // Stop the timer initially
@@ -132,9 +150,12 @@ func (s *scheduler) requestor(toRequest chan [32]byte, requestorChan chan [32]by
 	var currentHash *[32]byte
 	hashesToRequest := make([][32]byte, 0)
 
+	atLeastOneRequest := false
+
 	for {
 		select {
 		case h := <-toRequest:
+			atLeastOneRequest = true
 			if currentHash != nil {
 				s.client.l["scheduler"].Info("Adding hash to queue", "hash", htos(h))
 				hashesToRequest = append(hashesToRequest, h)
@@ -182,6 +203,15 @@ func (s *scheduler) requestor(toRequest chan [32]byte, requestorChan chan [32]by
 				s.client.sendCh <- s.client.RequestLeavesPacket(*currentHash)
 				timer.Reset(reRequestTime)
 			}
+
+		case <-checkFinish:
+			if currentHash != nil || len(hashesToRequest) > 0 || !atLeastOneRequest {
+				finish <- false
+				continue
+			}
+			s.client.l["scheduler"].Info("No more hashes to request, finishing")
+			finish <- true
+			return
 		}
 	}
 }
