@@ -3,10 +3,12 @@ package server
 import (
 	"fmt"
 	"slices"
+	"sync"
 
 	"codeberg.org/go-mmap/mmap"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/merkle_tree"
+	"golang.org/x/sync/errgroup"
 )
 
 // The file struct represents a file that has to be sent (or is already sent)
@@ -26,13 +28,23 @@ type file struct {
 }
 
 func (s *Server) openFiles(paths []string) error {
+	var mutex sync.Mutex
 	files := make([]*file, 0, len(paths))
+	g := new(errgroup.Group)
 	for _, path := range paths {
-		f, err := s.openFile(path)
-		if err != nil {
-			return fmt.Errorf("error opening file %s: %w", path, err)
-		}
-		files = append(files, f)
+		g.Go(func() error {
+			f, err := s.openFile(path)
+			if err != nil {
+				return fmt.Errorf("error opening file %s: %w", path, err)
+			}
+			mutex.Lock()
+			files = append(files, f)
+			mutex.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
 	}
 
 	// Sort files by their Merkle tree root hash to ensure a deterministic order
