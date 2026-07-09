@@ -131,10 +131,15 @@ func (s *Server) sendLoop() {
 		panic(s.fecEncoder.Run(s.sendCh, fecSend))
 	}()
 
-	rateLimit := int64(400 / 8) // MB/s
+	// TODO: This is very limited because client cannot keep up
+	rateLimit := int64(300 / 8) // MB/s
 
 	printDataRate := true
 	var printBytesSent atomic.Uint64
+
+	var batchSizeCount atomic.Int64
+	var batchSent atomic.Int64
+
 	if printDataRate {
 		intervalDatarate := 500 // ms
 		lastReset := time.Now()
@@ -143,6 +148,9 @@ func (s *Server) sendLoop() {
 				if time.Since(lastReset) > time.Duration(intervalDatarate)*time.Millisecond {
 					mbit := float64(printBytesSent.Load()) / (1024 * 1024 * (float64(intervalDatarate) / 1000)) * 8
 					s.l.Info("data rate", "rate", fmt.Sprintf("%.2f Mbit/s", mbit), "rate2", fmt.Sprintf("%.2f MB/s", mbit/8))
+					s.l.Info("batch stats", "average batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
+					batchSizeCount.Store(0)
+					batchSent.Store(0)
 					printBytesSent.Store(0)
 					lastReset = time.Now()
 					time.Sleep(time.Duration(intervalDatarate) * time.Millisecond)
@@ -154,26 +162,49 @@ func (s *Server) sendLoop() {
 	bytesSent := int64(0)
 	lastReset := time.Now()
 	// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
-	for {
-		data := <-fecSend
-		bytesSent += int64(len(data))
-		printBytesSent.Add(uint64(len(data))) // For data rate printing
-		mtPassed := time.Since(lastReset).Microseconds()
-		// Becuase we are using microseconds, we should count the 1e6 factor. But also we are measuring in
-		// Mega Bytes, so we should count the 1024*1024 factor. Becuase 1e6 ~= 1024*1024, we can just ignore
-		// the factors and use everything as is. This will result in a slightly lower rate than the
-		// specified rateLimit, but it is good enough for our purposes.
-		if bytesSent > rateLimit*mtPassed {
-			timeToWait := time.Duration((bytesSent-rateLimit*mtPassed)/rateLimit) * time.Microsecond
-			time.Sleep(timeToWait)
+
+	batchSize := 4096 * 8 // TODO: find a reasonable size, or dynamically adjust it
+	batch := make([][]byte, 0, batchSize)
+
+	sendBatch := func() {
+		if len(batch) == 0 {
+			return
 		}
-		if time.Since(lastReset) > 1*time.Second {
-			bytesSent = 0
-			lastReset = time.Now()
-		}
-		err := s.multicastConn.Send(data)
+		batchSizeCount.Add(int64(len(batch)))
+		batchSent.Add(1)
+		err := s.multicastConn.SendBatch(batch)
 		if err != nil {
-			s.l.Error("error sending message", "error", err)
+			s.l.Error("error sending batch", "error", err)
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case data := <-fecSend:
+			bytesSent += int64(len(data))
+			printBytesSent.Add(uint64(len(data))) // For data rate printing
+			mtPassed := time.Since(lastReset).Microseconds()
+			// Becuase we are using microseconds, we should count the 1e6 factor. But also we are measuring in
+			// Mega Bytes, so we should count the 1024*1024 factor. Becuase 1e6 ~= 1024*1024, we can just ignore
+			// the factors and use everything as is. This will result in a slightly lower rate than the
+			// specified rateLimit, but it is good enough for our purposes.
+			if bytesSent > rateLimit*mtPassed {
+				sendBatch()
+				timeToWait := time.Duration((bytesSent-rateLimit*mtPassed)/rateLimit) * time.Microsecond
+				time.Sleep(timeToWait)
+			}
+			if time.Since(lastReset) > 1*time.Second {
+				bytesSent = 0
+				lastReset = time.Now()
+			}
+
+			batch = append(batch, data)
+			if len(batch) >= batchSize {
+				sendBatch()
+			}
+		case <-time.After(10 * time.Millisecond):
+			sendBatch()
 		}
 	}
 }

@@ -141,3 +141,20 @@ loop:
 		return n, cm.Src, nil
 	}
 }
+
+func (m *Multicast) SendBatch(data [][]byte) error {
+	msgs := make([]ipv4.Message, len(data))
+	for i := range data {
+		msgs[i] = ipv4.Message{
+			Buffers: [][]byte{data[i]},
+			Addr:    &m.addr,
+			N:       len(data[i]),
+		}
+	}
+	_, err := m.conn.WriteBatch(msgs, 0) // TODO: Check flags
+	if err != nil {
+		return fmt.Errorf("error sending batch: %w", err)
+	}
+
+	return nil
+}
