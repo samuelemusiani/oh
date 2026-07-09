@@ -18,9 +18,8 @@ func (c *Client) handleAdvertisement(a *packet.Advertisement) error {
 
 	c.metadataBuff[a.Hash] = make([]*packet.Metadata, 0)
 	c.metadataBuffMutex.Unlock()
-	// Send request for metadata packets
-	c.sendCh <- c.RequestLeavesPacket(a.Hash)
 
+	c.scheduler.requestManifest(a.Hash)
 	return nil
 }
 
@@ -88,12 +87,6 @@ func (c *Client) handleMetadata(m *packet.Metadata) error {
 	}
 	c.l["metadata"].Info("Received all metadata packets for advertisement", "manifest_hash", htos(m.ManifestHash), "num_files", len(tmp))
 
-	// New Metadata packets are valid request the file data
-	go func() {
-		for _, m := range tmp {
-			c.filesToRequest <- m.DataHash
-		}
-	}()
-
+	c.scheduler.signalManifestComplete(m.ManifestHash)
 	return nil
 }

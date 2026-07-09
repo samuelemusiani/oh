@@ -51,46 +51,16 @@ type file struct {
 	mmapFile *mmap.File
 }
 
-// Gorouting that will request on file at a time from the filesToRequest channel
-func (c *Client) requestFiles(finish chan struct{}) {
-	atLeastOneFile := false
-	for {
-		select {
-		case f := <-c.filesToRequest:
-			err := c.requestFile(f)
-			if err != nil {
-				c.l["request"].Error("error requesting file", "hash", f, "error", err)
-			}
-			atLeastOneFile = true
-		case <-time.After(2 * time.Second):
-			if !atLeastOneFile {
-				continue
-			}
-			finish <- struct{}{}
-			return
-		}
-	}
-
-}
-
-func (c *Client) requestFile(hf [32]byte) error {
+func (c *Client) preRequestingFile(hf [32]byte) error {
 	c.metadataBuffMutex.Lock()
 	c.filesMapMutex.Lock()
+	defer c.metadataBuffMutex.Unlock()
+	defer c.filesMapMutex.Unlock()
 
 	err := c.prepareFile(hf)
 	if err != nil {
-		c.metadataBuffMutex.Unlock()
-		c.filesMapMutex.Unlock()
 		return fmt.Errorf("error preparing file: %w", err)
 	}
-
-	c.metadataBuffMutex.Unlock()
-	c.filesMapMutex.Unlock()
-
-	c.sendCh <- c.RequestLeavesPacket(hf)
-
-	<-c.filesMap[hf].finished
-
 	return nil
 }
 
@@ -500,6 +470,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 			// If we reach here, we have received all chunks for the file and the Merkle tree is complete
 			c.l["file"].Info("file download complete", "file_hash", htos(hf))
+
+			go c.scheduler.signalFileComplete(hf)
 
 			file.isFinished = true
 			close(file.finished)

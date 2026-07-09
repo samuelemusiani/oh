@@ -41,10 +41,10 @@ type Client struct {
 	filesMap          map[[32]byte]*file
 	filesMapMutex     sync.Mutex
 
-	filesToRequest chan [32]byte
-
 	sendCh    chan packet.Message
 	receiveCh chan packet.MessageWithSrc
+
+	scheduler *scheduler
 
 	l map[string]*slog.Logger
 }
@@ -62,21 +62,24 @@ func New(c oh.Config) (*Client, error) {
 
 	l := makeLoggers()
 
-	return &Client{
+	client := &Client{
 		config:        c,
 		multicastConn: m,
 		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), l["fec"]),
 		chunker:       chunker.NewChunker(hashFunc()),
 
-		metadataBuff:   make(map[[32]byte][]*packet.Metadata),
-		filesMap:       make(map[[32]byte]*file),
-		filesToRequest: make(chan [32]byte),
+		metadataBuff: make(map[[32]byte][]*packet.Metadata),
+		filesMap:     make(map[[32]byte]*file),
 
 		sendCh:    make(chan packet.Message, 1024),
 		receiveCh: make(chan packet.MessageWithSrc, 1024),
 
 		l: l,
-	}, nil
+	}
+
+	client.scheduler = newScheduler(client)
+
+	return client, nil
 }
 
 func (c *Client) ReceiveFiles(dir string) error {
@@ -167,7 +170,7 @@ func (c *Client) run() error {
 	finish := make(chan struct{})
 	go c.sendLoop()
 	go c.receiveLoop()
-	go c.requestFiles(finish)
+	go c.scheduler.run(finish)
 
 	for {
 		select {
@@ -201,6 +204,16 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 		h := htos(mtd.DataHash)
 		c.l["mhandler"].Info("Received metadata packet", "hash", h)
 
+		// Do not block
+		go func() {
+			c.scheduler.rec <- schedulerMessage{
+				t: schedulerMessageTypeMetadata,
+				m: schedulerMetadataMessage{
+					h: mtd.DataHash,
+				},
+			}
+		}()
+
 		err := c.handleMetadata(mtd)
 		if err != nil {
 			return fmt.Errorf("error handling metadata: %w", err)
@@ -211,6 +224,16 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 		fh := htos(data.RootHash)
 		bh := htos(data.LeafHash)
 		c.l["mhandler"].Info("Received data packet", "file_hash", fh, "blob_hash", bh, "blob_id", data.LeafIndex, "packet_id", data.PacketIndex)
+
+		go func() {
+			c.scheduler.rec <- schedulerMessage{
+				t: schedulerMessageTypeData,
+				m: schedulerDataMessage{
+					rootHash: data.RootHash,
+					leafHash: data.LeafHash,
+				},
+			}
+		}()
 
 		c.metadataBuffMutex.Lock()
 		c.filesMapMutex.Lock()
@@ -260,25 +283,27 @@ func makeLoggers() map[string]*slog.Logger {
 	}
 
 	levels := map[string]*slog.LevelVar{
-		"global":   {},
-		"fec":      {},
-		"send":     {},
-		"receive":  {},
-		"mhandler": {},
-		"metadata": {},
-		"file":     {},
-		"request":  {},
+		"global":    {},
+		"fec":       {},
+		"send":      {},
+		"receive":   {},
+		"mhandler":  {},
+		"metadata":  {},
+		"file":      {},
+		"request":   {},
+		"scheduler": {},
 	}
 
 	loggers := map[string]*slog.Logger{
-		"global":   makeLogger("global", levels["global"]),
-		"fec":      makeLogger("fec", levels["fec"]),
-		"send":     makeLogger("send", levels["send"]),
-		"receive":  makeLogger("receive", levels["receive"]),
-		"mhandler": makeLogger("mhandler", levels["mhandler"]),
-		"metadata": makeLogger("metadata", levels["metadata"]),
-		"file":     makeLogger("file", levels["file"]),
-		"request":  makeLogger("request", levels["request"]),
+		"global":    makeLogger("global", levels["global"]),
+		"fec":       makeLogger("fec", levels["fec"]),
+		"send":      makeLogger("send", levels["send"]),
+		"receive":   makeLogger("receive", levels["receive"]),
+		"mhandler":  makeLogger("mhandler", levels["mhandler"]),
+		"metadata":  makeLogger("metadata", levels["metadata"]),
+		"file":      makeLogger("file", levels["file"]),
+		"request":   makeLogger("request", levels["request"]),
+		"scheduler": makeLogger("scheduler", levels["scheduler"]),
 	}
 
 	// Change level at any time, takes effect immediately:
@@ -290,6 +315,7 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["metadata"].Set(slog.LevelInfo)
 	levels["file"].Set(slog.LevelInfo)
 	levels["request"].Set(slog.LevelInfo)
+	levels["scheduler"].Set(slog.LevelWarn)
 
 	return loggers
 }
