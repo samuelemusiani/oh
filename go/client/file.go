@@ -288,29 +288,6 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 	delete(ch.dataMap, id)
 	delete(ch.chunksInfo, id)
 
-	if len(ch.chunksToWrite) > 0 {
-		// We need to check if we can write any of the chunks that we have in the
-		// chunksToWrite slice.
-		slices.Sort(ch.chunksToWrite)
-		if ch.chunksToWrite[0] < id {
-			return nil
-		}
-
-		if ch.chunksToWrite[0] == id {
-			// Just wrote this chunk, we can remove it from the slice
-			ch.chunksToWrite = ch.chunksToWrite[1:]
-		}
-
-		if ch.chunksToWrite[0] == id+1 {
-			nextChunkID := ch.chunksToWrite[0]
-			ch.chunksToWrite = ch.chunksToWrite[1:]
-			err := ch.writeChunk(c, nextChunkID)
-			if err != nil {
-				return fmt.Errorf("error writing chunk %d to file: %w", nextChunkID, err)
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -382,6 +359,32 @@ func (ch *chunkHandler) addData(c *Client, data *dataInChunk) error {
 	if err != nil {
 		return fmt.Errorf("error writing chunk %d to file: %w", data.chunkID, err)
 	}
+
+	if len(ch.chunksToWrite) > 0 {
+		// We need to check if we can write any of the chunks that we have in the
+		// chunksToWrite slice.
+		slices.Sort(ch.chunksToWrite)
+
+		id := data.chunkID
+		if _, found := slices.BinarySearch(ch.chunksToWrite, id); found {
+			return nil
+		}
+		// We are now expecting this to be written
+		id++
+
+		for len(ch.chunksToWrite) > 0 && ch.chunksToWrite[0] == id {
+			if ch.chunksToWrite[0] == id {
+				nextChunkID := ch.chunksToWrite[0]
+				ch.chunksToWrite = ch.chunksToWrite[1:]
+				err := ch.writeChunk(c, nextChunkID)
+				if err != nil {
+					return fmt.Errorf("error writing chunk %d to file: %w", nextChunkID, err)
+				}
+			}
+			id++
+		}
+	}
+
 	return nil
 }
 
