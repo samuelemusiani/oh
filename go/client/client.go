@@ -206,7 +206,7 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 			return nil
 		}
 
-		f.dataChan <- dataInChunk{
+		f.dataChan <- &dataInChunk{
 			chunkHash:   data.LeafHash,
 			chunkID:     data.LeafIndex,
 			packetIndex: data.PacketIndex,

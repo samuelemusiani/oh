@@ -60,7 +60,7 @@ func (s *Server) AdvertisementPacket() (*packet.Advertisement, error) {
 }
 
 func (f *file) ChunkPacket(index uint32) ([]packet.Data, error) {
-	maxDataSize := 512
+	maxDataSize := packet.MaxDataPacketPayload
 	if index >= uint32(len(f.chunks)) {
 		return nil, fmt.Errorf("invalid chunk index %d for file %s", index, f.name)
 	}

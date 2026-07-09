@@ -132,7 +132,7 @@ func (s *Server) sendLoop() {
 	}()
 
 	// TODO: This is very limited because client cannot keep up
-	rateLimit := int64(300 / 8) // MB/s
+	rateLimit := int64(500 / 8) // MB/s
 
 	printDataRate := true
 	var printBytesSent atomic.Uint64

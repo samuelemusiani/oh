@@ -23,6 +23,8 @@ const (
 
 	// TODO: Calculate this based on MTU
 	MaxPayloadSize = 1024
+
+	MaxDataPacketPayload = 800
 )
 
 var (

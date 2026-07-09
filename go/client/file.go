@@ -42,7 +42,7 @@ type file struct {
 	metadataHash [32]byte
 
 	// Channel to receive data packets for this file
-	dataChan chan dataInChunk
+	dataChan chan *dataInChunk
 
 	// Because we cannot check if channel is closed :(
 	isFinished bool
@@ -100,7 +100,7 @@ func (c *Client) requestFile(hf [32]byte) error {
 func (c *Client) prepareFile(hf [32]byte) error {
 	// To find the hash of the manifest
 	fileStruct := file{
-		dataChan: make(chan dataInChunk),
+		dataChan: make(chan *dataInChunk),
 		finished: make(chan struct{}),
 	}
 	var metadata *packet.Metadata
@@ -346,7 +346,7 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 
 // Add a chunk to the chunkMap, verify if we have all the packets for it, if
 // so, write it to the file and mark it as complete
-func (ch *chunkHandler) addData(c *Client, data dataInChunk) error {
+func (ch *chunkHandler) addData(c *Client, data *dataInChunk) error {
 	if _, ok := ch.writtenChunks[data.chunkID]; ok {
 		c.l["file"].Debug("chunk already written to file", "file_hash", htos(ch.fileHash), "chunk_id", data.chunkID)
 		return nil
@@ -376,14 +376,14 @@ func (ch *chunkHandler) addData(c *Client, data dataInChunk) error {
 	mc.reRequest.Reset(timeoutPartialChunkRequest)
 
 	if _, ok := ch.dataMap[data.chunkID]; !ok {
-		ch.dataMap[data.chunkID] = make([]*dataInChunk, chunker.MaxChunkSize)
+		ch.dataMap[data.chunkID] = make([]*dataInChunk, chunker.MaxChunkSize/packet.MaxDataPacketPayload+1)
 	}
 	if data.packetIndex >= uint32(len(ch.dataMap[data.chunkID])) {
 		// TODO: We should expand the slice and keep same order. For the future
-		panic(fmt.Sprintf("packet index %d out of bounds for chunk %d", data.packetIndex, data.chunkID))
+		panic(fmt.Sprintf("packet index %d out of bounds for chunk %d. len %d", data.packetIndex, data.chunkID, len(ch.dataMap[data.chunkID])))
 	}
 
-	ch.dataMap[data.chunkID][data.packetIndex] = &data
+	ch.dataMap[data.chunkID][data.packetIndex] = data
 
 	for i := mc.lastPacketIndex; i < uint32(len(ch.dataMap[data.chunkID])); i++ {
 		if ch.dataMap[data.chunkID][i] == nil {
@@ -452,6 +452,17 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	}()
 
 	file := c.filesMap[hf]
+
+	go func() {
+		for {
+			time.Sleep(1 * time.Second)
+			fmt.Println("progress", "progress", float64(cHandler.totalWritten)/float64(cHandler.totalSize)*100)
+
+			if cHandler.totalWritten >= cHandler.totalSize {
+				return
+			}
+		}
+	}()
 
 	for {
 		select {
