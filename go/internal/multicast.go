@@ -116,7 +116,6 @@ func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast
 }
 
 func (m *Multicast) Send(data []byte) error {
-	// fmt.Printf("Sending %d bytes\n", len(data))
 	_, err := m.conn.WriteTo(data, nil, &m.addr)
 	if err != nil {
 		return fmt.Errorf("error sending data: %w", err)
@@ -167,8 +166,6 @@ func (m *Multicast) ReceiveBatch(buff [][]byte) (n int, srcs []net.IP, err error
 	if err != nil {
 		return 0, nil, fmt.Errorf("error receiving batch: %w", err)
 	}
-
-	// fmt.Println("Received batch of", n, "messages")
 
 	for i := 0; i < n; i++ {
 		buff[i] = buff[i][:msgs[i].N]

@@ -132,7 +132,7 @@ func (s *Server) sendLoop() {
 	}()
 
 	// TODO: This is very limited because client cannot keep up
-	rateLimit := int64(500 / 8) // MB/s
+	rateLimit := int64(800 / 8) // MB/s
 
 	printDataRate := true
 	var printBytesSent atomic.Uint64
@@ -163,8 +163,10 @@ func (s *Server) sendLoop() {
 	lastReset := time.Now()
 	// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
 
-	batchSize := 4096 * 8 // TODO: find a reasonable size, or dynamically adjust it
+	batchSize := 1
 	batch := make([][]byte, 0, batchSize)
+
+	maxBatchesSent := 0
 
 	sendBatch := func() {
 		if len(batch) == 0 {
@@ -176,6 +178,17 @@ func (s *Server) sendLoop() {
 		if err != nil {
 			s.l.Error("error sending batch", "error", err)
 		}
+
+		// TODO: remove when we'll have a congestion control
+		if len(batch) >= batchSize {
+			maxBatchesSent++
+			if maxBatchesSent > 16 {
+				maxBatchesSent = 0
+				batchSize *= 2
+				batch = make([][]byte, 0, batchSize)
+			}
+		}
+
 		batch = batch[:0]
 	}
 
