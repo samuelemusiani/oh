@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
@@ -207,6 +208,22 @@ func (c *Client) run() error {
 			}
 
 		case <-finish:
+			// Check that files are received correctly
+			wg := sync.WaitGroup{}
+			for h := range c.filesMap {
+				wg.Go(func() {
+					mt, err := c.merkleTreeForFileFromFile(h)
+					if err != nil {
+						c.l["global"].Error("error getting merkle tree for file", "hash", htos(h), "error", err)
+						return
+					}
+					if !bytes.Equal(mt.Root(), h[:]) {
+						c.l["global"].Error("file hash does not match merkle tree root", "hash", htos(h), "merkle_root", htos([32]byte(mt.Root())))
+					}
+				})
+			}
+			wg.Wait()
+
 			c.l["global"].Info("All files received, exiting")
 			return nil
 		}

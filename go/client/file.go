@@ -286,7 +286,6 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 
 	ch.writtenChunks[id] = struct{}{}
 	delete(ch.dataMap, id)
-	delete(ch.chunksInfo, id)
 
 	return nil
 }
@@ -456,7 +455,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				continue
 			}
 
-			mt, err := c.merkleTreeForFile(hf)
+			mt, err := cHandler.merkleTreeForFileFromChunks()
 			if err != nil {
 				c.l["file"].Error("error creating Merkle tree for file", "file_hash", htos(hf), "error", err)
 				continue
@@ -539,7 +538,30 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	}
 }
 
-func (c *Client) merkleTreeForFile(hf [32]byte) (*merkletree.MerkleTree, error) {
+// merkleTreeForFileFromChunks creates a Merkle tree for a file from the chunks
+// that we have received. This is faster becauase we already calculated the
+// hashes of the chunks (leaves)
+func (ch *chunkHandler) merkleTreeForFileFromChunks() (*merkletree.MerkleTree, error) {
+	nChunks := len(ch.chunksInfo)
+	calculatedLeafs := merkletree.NextPowerOfTwo(uint32(nChunks))
+	mt, err := merkletree.NewMerkleTree(calculatedLeafs, func(leaf uint32) ([]byte, error) {
+		if leaf >= uint32(nChunks) {
+			h := hashFunc()
+			h.Write([]byte{0})
+			return h.Sum(nil), nil
+		}
+		return ch.chunksInfo[leaf].hash[:], nil
+	}, hashFunc())
+	if err != nil {
+		return nil, fmt.Errorf("could not create Merkle tree: %w", err)
+	}
+
+	return mt, nil
+}
+
+// MerkleTreeForFileFromFile creates a Merkle tree for a file from the file
+// itself. This is slow and should be done separately from the chunk handler
+func (c *Client) merkleTreeForFileFromFile(hf [32]byte) (*merkletree.MerkleTree, error) {
 	var mmapFile *mmap.File
 	var mtDepth uint8
 	c.metadataBuffMutex.Lock()
