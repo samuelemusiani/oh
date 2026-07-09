@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal"
@@ -122,19 +124,42 @@ func (c *Client) receiveLoop() {
 		panic(c.fecDecoder.Run(tmpPacketBuff, c.receiveCh))
 	}()
 
-	buff := make([]byte, 65536)
+	var batchSizeCount atomic.Int64
+	var batchSizeReceived atomic.Int64
+
+	go func() {
+		for {
+			fmt.Println("Batch size average:", float64(batchSizeReceived.Load())/float64(batchSizeCount.Load()))
+			batchSizeCount.Store(0)
+			batchSizeReceived.Store(0)
+			time.Sleep(1 * time.Second)
+		}
+	}()
+
+	batchSize := 32
+	buff := make([][]byte, batchSize)
+	for i := range buff {
+		buff[i] = make([]byte, 2048) // Just to make sure :)
+	}
 	for {
-		n, src, err := c.multicastConn.Receive(buff)
+		n, srcs, err := c.multicastConn.ReceiveBatch(buff)
 		if err != nil {
 			c.l["receive"].Error("error receiving message", "error", err)
 			continue
 		}
-		copyBuff := make([]byte, n)
-		copy(copyBuff, buff[:n])
-		tmpPacketBuff <- internal.PacketWithSrc{
-			Packet: copyBuff,
-			Src:    src,
+		batchSizeCount.Add(1)
+		batchSizeReceived.Add(int64(n))
+
+		for i := range n {
+			copyBuff := make([]byte, len(buff[i]))
+			copy(copyBuff, buff[i])
+			tmpPacketBuff <- internal.PacketWithSrc{
+				Packet: copyBuff,
+				Src:    srcs[i],
+			}
+			buff[i] = buff[i][:cap(buff[i])] // Reset the buffer slice to the original size
 		}
+		buff = buff[:batchSize] // Reset the buffer slice to the original size
 	}
 }
 

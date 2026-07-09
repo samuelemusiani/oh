@@ -24,7 +24,7 @@ var (
 
 const (
 	timeoutPartialChunkRequest = 1 * time.Second
-	timeoutMissingChunkRequest = 5 * time.Second
+	timeoutMissingChunkRequest = 2 * time.Second
 )
 
 type dataInChunk struct {
