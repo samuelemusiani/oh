@@ -58,13 +58,6 @@ func newScheduler(client *Client) *scheduler {
 }
 
 func (s *scheduler) run(finish chan struct{}) {
-	// TODO
-	// 1. Accept manifest hashes
-	// 2. Accept hashes from packets in order to avoid re-requests
-	// 3. Check if something that we are requesting is already received
-	// 4. Accept merkel trees
-	// 5. Accept re-requests (for files)
-
 	manifestsToRequest := make(chan [32]byte)
 	manifestRequestorChan := make(chan [32]byte)
 	manifestCompleteChan := make(chan [32]byte)
@@ -191,4 +184,15 @@ func (s *scheduler) requestor(toRequest chan [32]byte, requestorChan chan [32]by
 			}
 		}
 	}
+}
+
+func (s *scheduler) reRequest(h [32]byte) {
+	// TODO: Now a simple send. Could be improved in the future
+	s.client.sendCh <- s.client.RequestLeavesPacket(h)
+}
+
+func (s *scheduler) requestLeafByIndex(rootHash [32]byte, leafIndex uint32) {
+	// TODO: Now a simple send. Could be improved in the future
+	// Expecially to avoid sending to many requests
+	s.client.sendCh <- s.client.RequestLeafPacket(leafIndex, rootHash)
 }

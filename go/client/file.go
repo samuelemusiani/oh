@@ -417,7 +417,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			chInfo.reRequest.Reset(timeoutPartialChunkRequest) // TODO: maybe an exponential backoff would be better
 			c.l["file"].Debug("re-requesting chunk for file", "file_hash", htos(hf), "chunk_id", chunkID, "chunk_hash", htos(chInfo.hash))
 			// We can request the chunk again, by hash :)
-			c.sendCh <- c.RequestLeavesPacket(chInfo.hash)
+
+			go c.scheduler.reRequest(hf)
 		}
 	}()
 
@@ -526,7 +527,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				}
 
 				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
-				c.sendCh <- c.RequestLeafPacket(uint32(i), hf)
+				go c.scheduler.requestLeafByIndex(hf, uint32(i))
 			}
 
 			cHandler.timer.Reset(timeoutMissingChunkRequest)
