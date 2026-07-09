@@ -85,10 +85,9 @@ func ReadPacket(buff []byte) (Message, error) {
 		return nil, fmt.Errorf("buffer too large: %d bytes (max %d bytes)", len(buff), MaxPayloadSize+sizeOfGlobalHeader)
 	}
 
-	r := bytes.NewReader(buff)
-	var hdr GlobalHeader
-	if err := binary.Read(r, binary.BigEndian, &hdr); err != nil {
-		return nil, fmt.Errorf("error reading global header: %w", err)
+	hdr := GlobalHeader{
+		Version: buff[0],
+		Type:    messageType(buff[1]),
 	}
 
 	if hdr.Version != 1 {

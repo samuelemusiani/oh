@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 )
 
 type Data struct {
@@ -62,40 +61,19 @@ func (d *Data) Encode() ([]byte, error) {
 }
 
 func (d *Data) Decode(buff []byte) error {
-	r := bytes.NewReader(buff)
-	if err := binary.Read(r, binary.BigEndian, &d.RootHash); err != nil {
-		return fmt.Errorf("error decoding file hash: %w", err)
+	copy(d.RootHash[:], buff[0:32])
+	copy(d.LeafHash[:], buff[32:64])
+	d.LeafIndex = binary.BigEndian.Uint32(buff[64:68])
+	d.PacketIndex = binary.BigEndian.Uint32(buff[68:72])
+	// Skip reserved
+	length := binary.BigEndian.Uint16(buff[74:76])
+	if len(buff) < 76+int(length) {
+		return fmt.Errorf("error decoding data: expected %d bytes, got %d bytes", length, len(buff)-77)
 	}
-	if err := binary.Read(r, binary.BigEndian, &d.LeafHash); err != nil {
-		return fmt.Errorf("error decoding blob hash: %w", err)
-	}
-	if err := binary.Read(r, binary.BigEndian, &d.LeafIndex); err != nil {
-		return fmt.Errorf("error decoding blob id: %w", err)
-	}
-	if err := binary.Read(r, binary.BigEndian, &d.PacketIndex); err != nil {
-		return fmt.Errorf("error decoding packet id: %w", err)
-	}
-	var reserved uint16
-	if err := binary.Read(r, binary.BigEndian, &reserved); err != nil {
-		return fmt.Errorf("error decoding reserved: %w", err)
-	}
-	var length uint16
-	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
-		return fmt.Errorf("error decoding data length: %w", err)
-	}
-
-	if r.Len() != int(length) {
-		return fmt.Errorf("error decoding data: expected %d bytes, got %d bytes", length, r.Len())
-	}
-
 	d.Data = make([]byte, length)
-	if _, err := r.Read(d.Data); err != nil {
-		return fmt.Errorf("error decoding data: %w", err)
-	}
-
-	if _, err := r.Read(make([]byte, 1)); err != io.EOF {
+	copy(d.Data, buff[76:76+length])
+	if len(buff) > 76+int(length) {
 		return fmt.Errorf("error decoding: %w", ErrExtraAfterReadingMessage)
 	}
-
 	return nil
 }
