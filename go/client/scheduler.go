@@ -51,7 +51,7 @@ type scheduler struct {
 // just some subfields
 func newScheduler(client *Client) *scheduler {
 	return &scheduler{
-		rec:              make(chan schedulerMessage),
+		rec:              make(chan schedulerMessage, 1024*1024),
 		fileCompleteChan: make(chan [32]byte),
 		client:           client,
 	}

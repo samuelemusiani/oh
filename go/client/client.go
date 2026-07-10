@@ -107,7 +107,7 @@ func (c *Client) ReceiveFiles(dir string) error {
 func (c *Client) sendLoop() {
 	// Clients are not expected to send any FEC blocks, we can ignore the construction
 
-	batchSize := 64
+	batchSize := 1024
 	batch := make([][]byte, 0, batchSize)
 
 	sendBatch := func() {
@@ -278,19 +278,12 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 			}
 		}()
 
-		c.metadataBuffMutex.Lock()
 		c.filesMapMutex.Lock()
 		f, ok := c.filesMap[data.RootHash]
 		if !ok {
-			err := c.prepareFile(data.RootHash)
-			if err != nil {
-				c.metadataBuffMutex.Unlock()
-				c.filesMapMutex.Unlock()
-				return fmt.Errorf("error preparing file: %w", err)
-			}
-			f = c.filesMap[data.RootHash]
+			// TODO: Remove
+			panic(fmt.Sprintf("received data packet for unknown file: %s", fh))
 		}
-		c.metadataBuffMutex.Unlock()
 		c.filesMapMutex.Unlock()
 
 		if f.isFinished {

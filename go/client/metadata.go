@@ -87,6 +87,24 @@ func (c *Client) handleMetadata(m *packet.Metadata) error {
 	}
 	c.l["metadata"].Info("Received all metadata packets for advertisement", "manifest_hash", htos(m.ManifestHash), "num_files", len(tmp))
 
+	// Prepare all the files
+	c.metadataBuffMutex.Lock()
+	c.filesMapMutex.Lock()
+	for _, m := range c.metadataBuff[m.ManifestHash] {
+		_, ok := c.filesMap[m.DataHash]
+		if ok {
+			panic("file already exists in filesMap, this should not happen")
+		}
+		err := c.prepareFile(m.DataHash)
+		if err != nil {
+			c.metadataBuffMutex.Unlock()
+			c.filesMapMutex.Unlock()
+			return fmt.Errorf("error preparing file: %w", err)
+		}
+	}
+	c.metadataBuffMutex.Unlock()
+	c.filesMapMutex.Unlock()
+
 	c.scheduler.signalManifestComplete(m.ManifestHash)
 	return nil
 }

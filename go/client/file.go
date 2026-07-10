@@ -70,7 +70,7 @@ func (c *Client) preRequestingFile(hf [32]byte) error {
 func (c *Client) prepareFile(hf [32]byte) error {
 	// To find the hash of the manifest
 	fileStruct := file{
-		dataChan: make(chan *dataInChunk),
+		dataChan: make(chan *dataInChunk, 1024*1024),
 		finished: make(chan struct{}),
 	}
 	var metadata *packet.Metadata
@@ -400,6 +400,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 		reRequest:     make(chan uint32),
 	}
 
+	cHandler.timer.Stop() // We will start the timer when we receive the first chunk
+
 	cHandler.chunksOffset[0] = 0 // First chunk always starts at offset 0
 
 	cHandler.findTotalSize(c)
@@ -420,7 +422,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			c.l["file"].Debug("re-requesting chunk for file", "file_hash", htos(hf), "chunk_id", chunkID, "chunk_hash", htos(chInfo.hash))
 			// We can request the chunk again, by hash :)
 
-			fmt.Println("re-requesting chunk for file", "chunk_id", chunkID, "towrite", cHandler.chunksToWrite, "total_written", cHandler.totalWritten, "total_size", cHandler.totalSize)
+			// fmt.Println("re-requesting chunk for file", "chunk_id", chunkID, "towrite", cHandler.chunksToWrite, "total_written", cHandler.totalWritten, "total_size", cHandler.totalSize)
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
