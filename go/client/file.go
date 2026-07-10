@@ -23,8 +23,8 @@ var (
 )
 
 const (
-	timeoutPartialChunkRequest = 1 * time.Second
-	timeoutMissingChunkRequest = 2 * time.Second
+	timeoutPartialChunkRequest = 1000 * time.Millisecond
+	timeoutMissingChunkRequest = 1000 * time.Millisecond
 )
 
 type dataInChunk struct {
@@ -420,6 +420,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			c.l["file"].Debug("re-requesting chunk for file", "file_hash", htos(hf), "chunk_id", chunkID, "chunk_hash", htos(chInfo.hash))
 			// We can request the chunk again, by hash :)
 
+			fmt.Println("re-requesting chunk for file", "chunk_id", chunkID, "towrite", cHandler.chunksToWrite, "total_written", cHandler.totalWritten, "total_size", cHandler.totalSize)
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
@@ -515,6 +516,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			}
 			c.metadataBuffMutex.Unlock()
 
+			leavesToRequest := 0
+
 			// TODO: Try to be smart. We can probably the number of last leaves based
 			// on file size and chunk size. But for now we will just request all
 			// missing chunks up to the depth of the Merkle tree.
@@ -530,7 +533,10 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
 				go c.scheduler.requestLeafByIndex(hf, uint32(i))
-				break
+				leavesToRequest++
+				if leavesToRequest >= 8 {
+					break
+				}
 			}
 
 			cHandler.timer.Reset(timeoutMissingChunkRequest)

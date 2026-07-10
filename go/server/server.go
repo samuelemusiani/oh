@@ -2,10 +2,8 @@ package server
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"sync/atomic"
 	"time"
@@ -40,12 +38,9 @@ type Server struct {
 	sendCh    chan packet.Message
 	receiveCh chan packet.MessageWithSrc
 
+	scheduler *scheduler
+
 	l *slog.Logger
-
-	currentlySending *[32]byte
-
-	pendingLeafRequests       map[[32]byte]time.Time
-	numberPendingLeafRequests atomic.Int32
 }
 
 type hashType uint8
@@ -91,7 +86,7 @@ func New(c oh.Config) (*Server, error) {
 		Level: slog.LevelInfo,
 	}))
 
-	return &Server{
+	server := Server{
 		config:        c,
 		multicastConn: m,
 		chunker:       chunker.NewChunker(hashFunc),
@@ -103,9 +98,10 @@ func New(c oh.Config) (*Server, error) {
 		receiveCh: make(chan packet.MessageWithSrc, 1024),
 
 		l: logger,
+	}
+	server.scheduler = newScheduler(&server)
 
-		pendingLeafRequests: make(map[[32]byte]time.Time),
-	}, nil
+	return &server, nil
 }
 
 func (s *Server) SendFiles(files []string) error {
@@ -247,6 +243,7 @@ func (s *Server) receiveLoop() {
 }
 
 func (s *Server) run() error {
+	go s.scheduler.run()
 	go s.sendLoop()
 	go s.receiveLoop()
 
@@ -289,7 +286,7 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 			panic("message type is advertisement but message is not of type *packet.Advertisement")
 		}
 
-		h := hex.EncodeToString(adv.Hash[:])
+		h := htos(adv.Hash)
 		s.l.Debug("Received advertisement packet", "src", msg.Src, "hash", h)
 		return nil
 	case packet.MessageTypeMetadata:
@@ -300,11 +297,7 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 		if !ok {
 			panic("message type is request but message is not of type *packet.Request")
 		}
-		err := s.handleLeavesRequest(req, msg.Src)
-		if err != nil {
-			return fmt.Errorf("error handling request packet: %w", err)
-		}
-
+		s.scheduler.enqueueLeavesRequest(req, msg.Src)
 		return nil
 
 	case packet.MessageTypeRequestLeaf:
@@ -312,160 +305,10 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 		if !ok {
 			panic("message type is request but message is not of type *packet.Request")
 		}
-		err := s.handleLeafRequest(req, msg.Src)
-		if err != nil {
-			return fmt.Errorf("error handling request packet: %w", err)
-		}
-
+		s.scheduler.enqueueLeafRequest(req, msg.Src)
 		return nil
 
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
-}
-
-func (s *Server) handleLeavesRequest(req *packet.RequestLeaves, src net.IP) error {
-	rh := hex.EncodeToString(req.Hash[:])
-	s.l.Debug("Received request packet", "hash", rh)
-
-	if s.currentlySending != nil {
-		if *s.currentlySending == req.Hash {
-			s.l.Debug("Already sending requested hash, ignoring request", "hash", rh)
-
-			return nil
-		}
-	}
-
-	entry, ok := s.hashLookup[req.Hash]
-	if !ok {
-		s.l.Debug("Received request packet for unknown hash", "hash", rh)
-
-		return nil
-	}
-
-	if s.currentlySending != nil && entry.t != hashTypeChunk {
-		// For now we only allow concurrent requests for chunks
-		// TODO: change later (?)
-		return nil
-	}
-
-	switch entry.t {
-	case hashTypeManifest:
-		s.l.Debug("Received request packet for manifest hash", "hash", rh)
-		s.currentlySending = &req.Hash
-		// We need to send the metadata packets for all files
-		go func() {
-			for _, f := range s.files {
-				s.sendCh <- f.MetadataPacket(*s.currentManifestHash)
-			}
-
-			s.currentlySending = nil
-		}()
-	case hashTypeFile:
-		s.l.Debug("Received request packet for file hash", "hash", rh)
-		s.currentlySending = &req.Hash
-		sendFile := func(file *file) error {
-			for i := range file.chunks {
-				s.l.Debug("Constructing chunk packets for file", "file", file.name, "blob_index", i)
-				pkts, err := file.ChunkPacket(uint32(i))
-				if err != nil {
-					return fmt.Errorf("error creating blob packet for file %s: %w", file.name, err)
-				}
-
-				s.l.Debug("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
-				for _, pkt := range pkts {
-					s.sendCh <- &pkt
-				}
-			}
-
-			return nil
-		}
-
-		file := s.files[entry.fileIndex]
-		go func() {
-			err := sendFile(file)
-			if err != nil {
-				s.l.Error("error sending file", "file", file.name, "error", err)
-			}
-			s.currentlySending = nil
-		}()
-	case hashTypeChunk:
-		s.l.Debug("Received request packet for chunk hash", "hash", rh, "file_index", entry.fileIndex, "chunk_index", entry.chunkIndex)
-		go func() {
-			pkts, err := s.files[entry.fileIndex].ChunkPacket(uint32(entry.chunkIndex))
-			if err != nil {
-				s.l.Error("error creating chunk packet", "file_index", entry.fileIndex, "blob_index", entry.chunkIndex, "error", err)
-				return
-			}
-			for _, pkt := range pkts {
-				s.sendCh <- &pkt
-			}
-		}()
-	default:
-		panic(fmt.Sprintf("unknown hash type for request packet: %d %s", entry.t, rh))
-	}
-
-	return nil
-}
-
-func (s *Server) handleLeafRequest(req *packet.RequestLeaf, src net.IP) error {
-	rh := hex.EncodeToString(req.RootHash[:])
-
-	entry, ok := s.hashLookup[req.RootHash]
-	if !ok {
-		s.l.Debug("Received request packet for unknown hash", "hash", rh)
-
-		return nil
-	}
-
-	// Limit number of concurrent requests, the server goes OOM :)
-	if s.numberPendingLeafRequests.Load() > 2 {
-		return nil
-	}
-
-	pendingLeafRequestTime, ok := s.pendingLeafRequests[req.RootHash]
-	if ok && time.Since(pendingLeafRequestTime) < 5*time.Second {
-		s.l.Debug("Received request packet for hash that is already being sent", "hash", rh)
-
-		return nil
-	}
-
-	s.pendingLeafRequests[req.RootHash] = time.Now()
-	s.numberPendingLeafRequests.Add(1)
-
-	// TODO: for now we don't support sub-trees. So hash must be the manifest or
-	// a file hash.
-	switch entry.t {
-	case hashTypeManifest:
-		if uint32(len(s.files)) < req.Index {
-			panic(fmt.Sprintf("requested index %d is out of bounds for manifest with %d files", req.Index, len(s.files)))
-		}
-		go func() {
-			defer s.numberPendingLeafRequests.Add(-1)
-			s.sendCh <- s.files[req.Index].MetadataPacket(*s.currentManifestHash)
-		}()
-	case hashTypeFile:
-		file := s.files[entry.fileIndex]
-		if uint32(len(file.chunks)) < req.Index {
-			// Because we don't advertise the number of chunks in the file, but only
-			// the depth of the Merkle tree, we can receive requests for chunks that
-			// don't exist. In this case we just ignore the request.
-			return nil
-		}
-		go func() {
-			defer s.numberPendingLeafRequests.Add(-1)
-			pkts, err := file.ChunkPacket(req.Index)
-			if err != nil {
-				s.l.Error("error creating chunk packet", "file", file.name, "chunk_index", req.Index, "error", err)
-				return
-			}
-			for _, pkt := range pkts {
-				s.sendCh <- &pkt
-			}
-		}()
-	default:
-		panic(fmt.Sprintf("unknown hash type for request packet: %d %s", entry.t, rh))
-	}
-
-	return nil
 }
