@@ -13,6 +13,7 @@ import (
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
+	merkletree "gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/merkle_tree"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
 
 	// Profiling
@@ -28,6 +29,18 @@ var (
 	hashFunc = sha256.New
 )
 
+type typeMerkleTree uint8
+
+const (
+	merkleTreeMetadata = iota
+	merkleTreeFile
+)
+
+type mtType struct {
+	mt *merkletree.MerkleTree
+	t  typeMerkleTree
+}
+
 type Client struct {
 	config        oh.Config
 	multicastConn *internal.Multicast
@@ -41,6 +54,9 @@ type Client struct {
 	metadataBuffMutex sync.Mutex
 	filesMap          map[[32]byte]*file
 	filesMapMutex     sync.Mutex
+
+	trees         map[[32]byte]mtType
+	treesMapMutex sync.Mutex
 
 	sendCh    chan packet.Message
 	receiveCh chan packet.MessageWithSrc
@@ -71,6 +87,7 @@ func New(c oh.Config) (*Client, error) {
 
 		metadataBuff: make(map[[32]byte][]*packet.Metadata),
 		filesMap:     make(map[[32]byte]*file),
+		trees:        make(map[[32]byte]mtType),
 
 		sendCh:    make(chan packet.Message, 1024),
 		receiveCh: make(chan packet.MessageWithSrc, 1024),
@@ -297,6 +314,21 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 			data:        data.Data,
 		}
 
+	case packet.MessageTypeMerkleTree:
+		pkt := msg.MSG.(*packet.MerkleTree)
+		c.l["mhandler"].Info("Received merkle tree packet", "root_hash", htos(pkt.RootHash), "depth", pkt.Depth, "node_count", len(pkt.Nodes))
+
+		go func() {
+			c.scheduler.rec <- schedulerMessage{
+				t: schedulerMessageTypeMerkleTree,
+				m: schedulerMerkleTreeMessage{
+					rootHash: pkt.RootHash,
+					depth:    pkt.Depth,
+					leaves:   pkt.Nodes,
+				},
+			}
+		}()
+
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
@@ -348,7 +380,7 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["send"].Set(slog.LevelDebug)
 	levels["receive"].Set(slog.LevelInfo)
 	levels["mhandler"].Set(slog.LevelWarn)
-	levels["metadata"].Set(slog.LevelInfo)
+	levels["metadata"].Set(slog.LevelWarn)
 	levels["file"].Set(slog.LevelInfo)
 	levels["request"].Set(slog.LevelInfo)
 	levels["scheduler"].Set(slog.LevelWarn)

@@ -40,6 +40,7 @@ type dataInChunk struct {
 type file struct {
 	// Hash of manifest where metadata for this file is contained
 	metadataHash [32]byte
+	metadata     *packet.Metadata
 
 	// Channel to receive data packets for this file
 	dataChan chan *dataInChunk
@@ -49,19 +50,8 @@ type file struct {
 	finished   chan struct{}
 
 	mmapFile *mmap.File
-}
 
-func (c *Client) preRequestingFile(hf [32]byte) error {
-	c.metadataBuffMutex.Lock()
-	c.filesMapMutex.Lock()
-	defer c.metadataBuffMutex.Unlock()
-	defer c.filesMapMutex.Unlock()
-
-	err := c.prepareFile(hf)
-	if err != nil {
-		return fmt.Errorf("error preparing file: %w", err)
-	}
-	return nil
+	mt *merkletree.MerkleTree
 }
 
 // prepareFile expects to have mutual exclusion on filesMapMutex and metadataBuffMutex.
@@ -73,26 +63,24 @@ func (c *Client) prepareFile(hf [32]byte) error {
 		dataChan: make(chan *dataInChunk, 1024*1024),
 		finished: make(chan struct{}),
 	}
-	var metadata *packet.Metadata
-
 mloop:
 	for k, m := range c.metadataBuff {
 		for _, md := range m {
 			if md.DataHash == hf {
 				c.l["file"].Debug("found metadata for file", "file_hash", htos(hf), "manifest_hash", htos(k))
 				fileStruct.metadataHash = k
-				metadata = md
+				fileStruct.metadata = md
 				break mloop
 			}
 		}
 	}
 
 	// With manifest hash we also have metadata
-	if metadata == nil {
+	if fileStruct.metadata == nil {
 		panic("metadata for file not found, this should never happen")
 	}
 
-	fileData := fileDataFromMetata(metadata)
+	fileData := fileDataFromMetadata(fileStruct.metadata)
 	fPath := path.Join(c.dir, fileData.Name)
 
 	// Create file with the size from metadata
@@ -105,6 +93,12 @@ mloop:
 		}
 		return fmt.Errorf("error creating file: %w", err)
 	}
+
+	leaves := merkletree.LeafsFromDepth(fileData.MerkleTreeDepth)
+	fileStruct.mt = merkletree.NewPartialMerkleTree(leaves, fileStruct.metadata.DataHash[:], hashFunc())
+	c.treesMapMutex.Lock()
+	c.trees[fileStruct.metadata.DataHash] = mtType{mt: fileStruct.mt, t: merkleTreeFile}
+	c.treesMapMutex.Unlock()
 
 	c.filesMap[hf] = &fileStruct
 	go c.chunkHandlerForFile(hf)
@@ -139,7 +133,7 @@ func (*Client) createFile(path string, size uint64) (*mmap.File, error) {
 	return mmapFile, nil
 }
 
-func fileDataFromMetata(m *packet.Metadata) *packet.FileMetadata {
+func fileDataFromMetadata(m *packet.Metadata) *packet.FileMetadata {
 	fm, ok := m.Data.(*packet.FileMetadata)
 	if !ok {
 		panic("metadata is not of type FileMetadata, this should never happen")
@@ -205,15 +199,7 @@ func (ch *chunkHandler) findTotalSize(c *Client) {
 		panic(fmt.Sprintf("file not found for hash %x, this should never happen", ch.fileHash))
 	}
 	c.filesMapMutex.Unlock()
-
-	c.metadataBuffMutex.Lock()
-	for _, m := range c.metadataBuff[f.metadataHash] {
-		if m.DataHash == ch.fileHash {
-			ch.totalSize = binary.NativeEndian.Uint64(fileDataFromMetata(m).Size)
-			break
-		}
-	}
-	c.metadataBuffMutex.Unlock()
+	ch.totalSize = binary.NativeEndian.Uint64(fileDataFromMetadata(f.metadata).Size)
 }
 
 // Writes a complete chunk to the file. It expects the chunk to be complet
@@ -263,6 +249,11 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 		slices.Sort(ch.chunksToWrite)
 		return nil
 	}
+
+	leafHash := hashFunc()
+	leafHash.Reset()
+	leafHash.Write([]byte{0})
+
 	for i, chunk := range ch.dataMap[id] {
 		if chunk == nil {
 			panic(fmt.Sprintf("chunk %d is complete but packet %d is missing, this should never happen", id, i))
@@ -277,9 +268,17 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 		}
 		offset += uint64(len(chunk.data))
 		ch.totalWritten += uint64(len(chunk.data))
+		leafHash.Write(chunk.data)
 	}
 
 	c.l["file"].Debug("chunk written to file", "file_hash", htos(ch.fileHash), "chunk_id", id, "offset", offset, "total_written", ch.totalWritten)
+
+	c.treesMapMutex.Lock()
+	err := c.trees[ch.fileHash].mt.PutLeaf(leafHash.Sum(nil), id)
+	if err != nil {
+		return fmt.Errorf("putting leaf into merkle tree: %w", err)
+	}
+	c.treesMapMutex.Unlock()
 
 	// Offset for the next chunk
 	ch.chunksOffset[id+1] = offset
@@ -419,10 +418,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				panic("if timer has fired we must have the chunksInfo")
 			}
 			chInfo.reRequest.Reset(timeoutPartialChunkRequest) // TODO: maybe an exponential backoff would be better
-			c.l["file"].Debug("re-requesting chunk for file", "file_hash", htos(hf), "chunk_id", chunkID, "chunk_hash", htos(chInfo.hash))
 			// We can request the chunk again, by hash :)
 
-			// fmt.Println("re-requesting chunk for file", "chunk_id", chunkID, "towrite", cHandler.chunksToWrite, "total_written", cHandler.totalWritten, "total_size", cHandler.totalSize)
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
@@ -474,6 +471,21 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				continue
 			}
 
+			// We need to mark the tree as completed
+			c.treesMapMutex.Lock()
+			totChunks := uint32(len(cHandler.chunksInfo))
+			calculatedLeafs := merkletree.NextPowerOfTwo(totChunks)
+			h := hashFunc()
+			h.Write([]byte{0})
+			hash := h.Sum(nil)
+			for i := totChunks; i < calculatedLeafs; i++ {
+				err := c.trees[hf].mt.PutLeaf(hash, i)
+				if err != nil {
+					panic("putting leaf")
+				}
+			}
+			c.treesMapMutex.Unlock()
+
 			// If we reach here, we have received all chunks for the file and the Merkle tree is complete
 			c.l["file"].Info("file download complete", "file_hash", htos(hf))
 
@@ -500,30 +512,12 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			// is balanced) and request all of them
 			c.l["file"].Debug("timeout waiting for chunks for file", "file_hash", htos(hf))
 
-			var metadata *packet.Metadata
-			c.metadataBuffMutex.Lock()
-			f, ok := c.metadataBuff[file.metadataHash]
-			if !ok {
-				panic(fmt.Sprintf("file not found for hash %x, this should never happen", hf))
-			}
-
-			for _, m := range f {
-				if m.DataHash == hf {
-					metadata = m
-					break
-				}
-			}
-			if metadata == nil {
-				panic(fmt.Sprintf("metadata for file %x not found, this should never happen", hf))
-			}
-			c.metadataBuffMutex.Unlock()
-
 			leavesToRequest := 0
 
 			// TODO: Try to be smart. We can probably the number of last leaves based
 			// on file size and chunk size. But for now we will just request all
 			// missing chunks up to the depth of the Merkle tree.
-			for i := range merkletree.LeafsFromDepth(fileDataFromMetata(metadata).MerkleTreeDepth) {
+			for i := range merkletree.LeafsFromDepth(fileDataFromMetadata(file.metadata).MerkleTreeDepth) {
 				_, ok := cHandler.chunksInfo[uint32(i)]
 				if ok {
 					continue
@@ -572,27 +566,19 @@ func (ch *chunkHandler) merkleTreeForFileFromChunks() (*merkletree.MerkleTree, e
 func (c *Client) merkleTreeForFileFromFile(hf [32]byte) (*merkletree.MerkleTree, error) {
 	var mmapFile *mmap.File
 	var mtDepth uint8
-	c.metadataBuffMutex.Lock()
 	c.filesMapMutex.Lock()
 	f, ok := c.filesMap[hf]
 	if !ok {
-		c.metadataBuffMutex.Unlock()
 		c.filesMapMutex.Unlock()
 		return nil, fmt.Errorf("file not found for hash %x", hf)
 	}
 	mmapFile = f.mmapFile
 
-	for _, m := range c.metadataBuff[f.metadataHash] {
-		if m.DataHash == hf {
-			mtDepth = fileDataFromMetata(m).MerkleTreeDepth
-			break
-		}
-	}
+	mtDepth = fileDataFromMetadata(f.metadata).MerkleTreeDepth
 	if mtDepth == 0 {
 		panic(fmt.Sprintf("Merkle tree depth not found for file %x, this should never happen", hf))
 	}
 
-	c.metadataBuffMutex.Unlock()
 	c.filesMapMutex.Unlock()
 
 	chunks, err := c.chunker.ChunkFile(mmapFile)

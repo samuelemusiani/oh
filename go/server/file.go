@@ -53,27 +53,15 @@ func (s *Server) openFiles(paths []string) error {
 	})
 
 	s.files = files
-	for i, f := range s.files {
+	for _, f := range s.files {
+		s.filesHashes[[32]byte(f.mt.Root())] = f
+
 		if _, ok := s.hashLookup[[32]byte(f.mt.Root())]; ok {
 			panic(fmt.Sprintf("duplicate file hash %x for file %s", f.mt.Root(), f.path))
 		}
 
-		s.hashLookup[[32]byte(f.mt.Root())] = hashLookupEntry{
-			t:         hashTypeFile,
-			fileIndex: i,
-		}
-
-		for j, c := range f.chunks {
-			lh := f.mt.LeafHash(uint32(j))
-			if e, ok := s.hashLookup[[32]byte(lh)]; ok {
-				panic(fmt.Sprintf("duplicate chunk hash %x for file %s type %d", c.Hash(), f.path, e.t))
-			}
-
-			s.hashLookup[[32]byte(lh)] = hashLookupEntry{
-				t:          hashTypeChunk,
-				fileIndex:  i,
-				chunkIndex: j,
-			}
+		for _, n := range f.mt.GetAllNodes() {
+			s.hashLookup[[32]byte(n.Hash())] = f.mt
 		}
 	}
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"net"
@@ -14,6 +15,11 @@ import (
 const (
 	maxConcurrentBigRequests   = 1
 	maxConcurrentSmallRequests = 2
+
+	// These numbers should be adjusted based on the size of the leaves.
+	// But they can be lowered to test merkle trees :)
+	maxLeavesForManifest = 1 << 31
+	maxLeavesForFiles    = 1 << 31
 
 	oldRequestTimeout = 5 * time.Second
 )
@@ -53,6 +59,8 @@ type scheduler struct {
 	leavesQueue chan leavesWithIP
 	leafQueue   chan leafWithIP
 
+	sentMTForManifest bool
+
 	l *slog.Logger
 
 	// We probably don't need the full server pointer, but just some subfields.
@@ -68,7 +76,7 @@ func newScheduler(s *Server) *scheduler {
 			}
 			return a
 		},
-		Level: slog.LevelDebug,
+		Level: slog.LevelInfo,
 	}))
 
 	return &scheduler{
@@ -112,68 +120,145 @@ func (s *scheduler) sortLeavesRequests() {
 		r := <-s.leavesQueue
 		s.l.Debug("Received leaves request packet", "hash", htos(r.r.Hash))
 
-		entry, ok := s.s.hashLookup[r.r.Hash]
+		mt, ok := s.s.hashLookup[r.r.Hash]
 		if !ok {
-			s.s.l.Debug("Received request packet for unknown hash", "hash", htos(r.r.Hash))
+			s.l.Debug("Received request packet for unknown hash", "hash", htos(r.r.Hash))
 
 			continue
 		}
 
-		switch entry.t {
-		case hashTypeManifest:
-			s.s.l.Debug("Received request packet for manifest hash", "hash", htos(r.r.Hash))
-			// We need to send the metadata packets for all files
+		switch {
+		// TODO: Maybe just check the pointers? In theory we only have 1 object in
+		// memeory for the merkle manifest tree
+		case bytes.Equal(mt.Root(), s.s.currentManifest.Root()):
+			s.l.Debug("Received request packet for manifest tree", "root", htos([32]byte(mt.Root())), "requested", htos(r.r.Hash))
+			// We need to send the metadata packets
+
+			// Get number of leaves
+			// Check if number is greater than MAX (?)
+			// If lower send leaves -> need to get leves abs indexes from root
+			// If greater send merkle tree :)
+			nleaves, err := mt.NumberOfLeavesFromRootHash(r.r.Hash[:])
+			if err != nil {
+				panic("cannot calculate number of leaves from root hash")
+			}
+
+			s.l.Debug("number of leaves", "leaves", nleaves)
+
+			// For the server we send the merkle tree packet for the manifest if 2 cases:
+			// 1. The first one is the same as for files: if the number of leaves is greater
+			// 		than the maxLeavesForManifest constant.
+			// 2. The second case is to help clients. Because for metadata we do not
+			// 		send the index of them inside the tree (we do it for chunks in files),
+			//		the clients have not reliable way to determine how to construct the
+			//		tree beucase they don't know where to put the metadata.
+			//		So if we sent a MT message and the client is trying to reconstruct
+			//		the tree, we everything up to the leaves. This helps the client because
+			//		after receiving one metadata, with the hash, it can determine the
+			// 		location in the merkle tree
+			if nleaves > maxLeavesForManifest || (nleaves != 1 && s.sentMTForManifest) {
+				s.sentMTForManifest = true
+				// number of leaves too large, we send a merkle tree
+
+				s.smallRequestQueue <- request{
+					t: time.Now(),
+					f: func() {
+						pkt, err := MerkleTreePacket(mt, r.r.Hash)
+						if err != nil {
+							s.l.Error("error creating merkle tree packet", "error", err)
+							return
+						}
+						s.s.sendCh <- pkt
+					},
+				}
+
+				continue
+			}
+
+			s.l.Debug("sending all the metadata packets for hash", "hash", htos(r.r.Hash))
+			leavesIndexes, err := mt.GetAbsoluteLevesIndexesFromRootHash(r.r.Hash[:])
+			if err != nil {
+				panic("cannot get absolute leaves indexes")
+			}
 
 			s.bigRequestQueue <- request{
 				t: time.Now(),
 				f: func() {
-					for _, f := range s.s.files {
-						s.s.sendCh <- f.MetadataPacket(*s.s.currentManifestHash)
+					for _, i := range leavesIndexes {
+						if i >= uint32(len(s.s.files)) {
+							break
+						}
+						// TODO: Based on the RFC, we should always put the manifest hash
+						// inside the metadata packet, even if the queried hash was a sub-tree.
+						// Probably we could have thought this better...
+						s.s.sendCh <- s.s.files[i].MetadataPacket([32]byte(mt.Root()))
 					}
 					s.nBigRequests.Add(-1)
 				},
 			}
-		case hashTypeFile:
-			s.s.l.Debug("Received request packet for file hash", "hash", htos(r.r.Hash))
-			file := s.s.files[entry.fileIndex]
+		// In this case the default is for files. If streams were implemented then
+		// we would have another case
+		default:
+			s.l.Debug("Received request packet for file hash", "hash", htos(r.r.Hash))
+
+			nleaves, err := mt.NumberOfLeavesFromRootHash(r.r.Hash[:])
+			if err != nil {
+				panic("cannot calculate number of leaves from root hash")
+			}
+
+			s.l.Debug("number of leaves", "leaves", nleaves)
+
+			if nleaves > maxLeavesForFiles {
+				// number of leaves too large, we send a merkle tree
+				s.smallRequestQueue <- request{
+					t: time.Now(),
+					f: func() {
+						pkt, err := MerkleTreePacket(mt, r.r.Hash)
+						if err != nil {
+							s.l.Error("error creating merkle tree packet", "error", err)
+							return
+						}
+						s.s.sendCh <- pkt
+					},
+				}
+
+				continue
+			}
+
+			s.l.Debug("sending all the chunks for hash", "hash", htos(r.r.Hash))
+			leavesIndexes, err := mt.GetAbsoluteLevesIndexesFromRootHash(r.r.Hash[:])
+			if err != nil {
+				panic("cannot get absolute leaves indexes")
+			}
+
+			s.l.Debug("d1", "leavesIndexes", leavesIndexes)
+			file := s.s.filesHashes[[32]byte(mt.Root())]
+			s.l.Debug("d2", "file", htos([32]byte(file.mt.Root())))
+
+			// TODO: if leavesIndexes are not many we can probably classify this as
+			// a small request
 			s.bigRequestQueue <- request{
 				t: time.Now(),
 				f: func() {
-					for i := range file.chunks {
-						s.s.l.Debug("Constructing chunk packets for file", "file", file.name, "blob_index", i)
+					for _, i := range leavesIndexes {
+						if i >= uint32(len(file.chunks)) {
+							s.l.Debug("d3", "leavesIndexes", leavesIndexes, "len", len(file.chunks))
+							break
+						}
+						s.l.Debug("Constructing chunk packets for file", "file", file.name, "blob_index", i)
 						pkts, err := file.ChunkPacket(uint32(i))
 						if err != nil {
-							s.s.l.Error("error creating chunk packet", "file", file.name, "blob_index", i, "error", err)
+							s.l.Error("error creating chunk packet", "file", file.name, "blob_index", i, "error", err)
 							return
 						}
 
-						s.s.l.Debug("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
+						s.l.Debug("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
 						for _, pkt := range pkts {
 							s.s.sendCh <- &pkt
 						}
 					}
 				},
 			}
-
-		case hashTypeChunk:
-			s.s.l.Debug("Received request packet for chunk hash", "hash", htos(r.r.Hash), "file_index", entry.fileIndex, "chunk_index", entry.chunkIndex)
-			s.smallRequestQueue <- request{
-				t: time.Now(),
-				f: func() {
-					fmt.Println("Sending chunk packets for file", "file_index", entry.fileIndex, "chunk_index", entry.chunkIndex)
-					pkts, err := s.s.files[entry.fileIndex].ChunkPacket(uint32(entry.chunkIndex))
-					if err != nil {
-						s.s.l.Error("error creating chunk packet", "file_index", entry.fileIndex, "blob_index", entry.chunkIndex, "error", err)
-						return
-					}
-					for _, pkt := range pkts {
-						s.s.sendCh <- &pkt
-					}
-					fmt.Println("Finished sending chunk packets for file", "file_index", entry.fileIndex, "chunk_index", entry.chunkIndex)
-				},
-			}
-		default:
-			panic(fmt.Sprintf("unknown hash type for request packet: %d %v", entry.t, htos(r.r.Hash)))
 		}
 	}
 }
@@ -183,28 +268,30 @@ func (s *scheduler) handleLeafRequests() {
 		r := <-s.leafQueue
 		s.l.Debug("Received leaf request packet", "hash", htos(r.r.RootHash), "index", r.r.Index)
 
-		entry, ok := s.s.hashLookup[r.r.RootHash]
+		mt, ok := s.s.hashLookup[r.r.RootHash]
 		if !ok {
-			s.s.l.Debug("Received request packet for unknown hash", "hash", htos(r.r.RootHash))
+			s.l.Debug("Received request packet for unknown hash", "hash", htos(r.r.RootHash))
 
 			continue
 		}
 
-		switch entry.t {
-		// TODO: for now we don't support sub-trees. So hash must be the manifest or
-		// a file hash.
-		case hashTypeManifest:
+		switch {
+		// TODO: Maybe just check the pointers? In theory we only have 1 object in
+		// memeory for the merkle manifest tree
+		case bytes.Equal(mt.Root(), s.s.currentManifest.Root()):
 			if uint32(len(s.s.files)) < r.r.Index {
 				panic(fmt.Sprintf("requested index %d is out of bounds for manifest with %d files", r.r.Index, len(s.s.files)))
 			}
 			s.smallRequestQueue <- request{
 				t: time.Now(),
 				f: func() {
-					s.s.sendCh <- s.s.files[r.r.Index].MetadataPacket(*s.s.currentManifestHash)
+					s.s.sendCh <- s.s.files[r.r.Index].MetadataPacket([32]byte(mt.Root()))
 				},
 			}
-		case hashTypeFile:
-			file := s.s.files[entry.fileIndex]
+		// In this case the default is for files. If streams were implemented then
+		// we would have another case
+		default:
+			file := s.s.filesHashes[[32]byte(mt.Root())]
 			if r.r.Index >= uint32(len(file.chunks)) {
 				// Because we don't advertise the number of chunks in the file, but only
 				// the depth of the Merkle tree, we can receive requests for chunks that
@@ -216,7 +303,7 @@ func (s *scheduler) handleLeafRequests() {
 				f: func() {
 					pkts, err := file.ChunkPacket(r.r.Index)
 					if err != nil {
-						s.s.l.Error("error creating chunk packet", "file", file.name, "chunk_index", r.r.Index, "error", err)
+						s.l.Error("error creating chunk packet", "file", file.name, "chunk_index", r.r.Index, "error", err)
 						return
 					}
 					for _, pkt := range pkts {
@@ -224,8 +311,6 @@ func (s *scheduler) handleLeafRequests() {
 					}
 				},
 			}
-		default:
-			panic(fmt.Sprintf("unknown hash type for request packet: %d %v", entry.t, htos(r.r.RootHash)))
 		}
 	}
 }
@@ -236,8 +321,11 @@ func (s *scheduler) handleBigRequests() {
 			s.l.Debug("Dropping old big request", "age", time.Since(req.t))
 			continue
 		}
+		s.l.Debug("Trying to schedule big request")
 		s.bigRequestsSemaphore <- struct{}{}
 		s.nBigRequests.Add(1)
+
+		s.l.Debug("BIG REQUEST SCHEDULED")
 		go func() {
 			defer func() {
 				<-s.bigRequestsSemaphore
