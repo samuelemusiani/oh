@@ -575,10 +575,6 @@ func (c *Client) merkleTreeForFileFromFile(hf [32]byte) (*merkletree.MerkleTree,
 	mmapFile = f.mmapFile
 
 	mtDepth = fileDataFromMetadata(f.metadata).MerkleTreeDepth
-	if mtDepth == 0 {
-		panic(fmt.Sprintf("Merkle tree depth not found for file %x, this should never happen", hf))
-	}
-
 	c.filesMapMutex.Unlock()
 
 	chunks, err := c.chunker.ChunkFile(mmapFile)
