@@ -3,6 +3,8 @@ package client
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -121,7 +123,7 @@ func (c *Client) ReceiveFiles(dir string) error {
 	return nil
 }
 
-func (c *Client) sendLoop() {
+func (c *Client) sendLoop(bytesSent *uint64) {
 	// Clients are not expected to send any FEC blocks, we can ignore the construction
 
 	batchSize := 1024
@@ -130,6 +132,9 @@ func (c *Client) sendLoop() {
 	sendBatch := func() {
 		if len(batch) == 0 {
 			return
+		}
+		for i := range batch {
+			*bytesSent += uint64(len(batch[i]))
 		}
 		err := c.multicastConn.SendBatch(batch)
 		if err != nil {
@@ -180,7 +185,7 @@ func (c *Client) sendLoop() {
 	}
 }
 
-func (c *Client) receiveLoop() {
+func (c *Client) receiveLoop(bytesReceived *uint64) {
 	tmpPacketBuff := make(chan internal.PacketWithSrc)
 	go func() {
 		panic(c.fecDecoder.Run(tmpPacketBuff, c.receiveCh))
@@ -189,7 +194,7 @@ func (c *Client) receiveLoop() {
 	batchSize := 32
 	buff := make([][]byte, batchSize)
 	for i := range buff {
-		buff[i] = make([]byte, 2048) // Just to make sure :)
+		buff[i] = make([]byte, 2048) // Just to make sure :), but should be MTU
 	}
 	for {
 		n, srcs, err := c.multicastConn.ReceiveBatch(buff)
@@ -199,6 +204,7 @@ func (c *Client) receiveLoop() {
 		}
 		for i := range n {
 			copyBuff := make([]byte, len(buff[i]))
+			*bytesReceived += uint64(len(buff[i]))
 			copy(copyBuff, buff[i])
 			tmpPacketBuff <- internal.PacketWithSrc{
 				Packet: copyBuff,
@@ -212,8 +218,12 @@ func (c *Client) receiveLoop() {
 
 func (c *Client) run() error {
 	finish := make(chan struct{})
-	go c.sendLoop()
-	go c.receiveLoop()
+
+	bytesSent := uint64(0)
+	bytesReceived := uint64(0)
+
+	go c.sendLoop(&bytesSent)
+	go c.receiveLoop(&bytesReceived)
 	go c.scheduler.run(finish)
 
 	for {
@@ -242,6 +252,36 @@ func (c *Client) run() error {
 			wg.Wait()
 
 			c.l["global"].Info("All files received, exiting")
+
+			totalBytesForFiles := uint64(0)
+			c.filesMapMutex.Lock()
+			for _, f := range c.filesMap {
+				fData := fileDataFromMetadata(f.metadata)
+				totalBytesForFiles += binary.NativeEndian.Uint64(fData.Size)
+				totalBytesForFiles += uint64(len(fData.Name))
+			}
+
+			c.filesMapMutex.Unlock()
+			ov := struct {
+				BytesReceived      uint64  `json:"bytes_received"`
+				BytesSent          uint64  `json:"bytes_sent"`
+				TotalBytesForFiles uint64  `json:"total_bytes_for_files"`
+				Overhead           float64 `json:"overhead"`
+			}{
+				BytesReceived:      bytesReceived,
+				BytesSent:          bytesSent,
+				TotalBytesForFiles: totalBytesForFiles,
+				Overhead:           float64(bytesReceived+bytesSent-totalBytesForFiles) / float64(totalBytesForFiles) * 100,
+			}
+
+			m, err := json.MarshalIndent(ov, "", "\t")
+			if err != nil {
+				panic("could not marshal struct")
+			}
+			fmt.Println("------------ OVERHEAD START ------------")
+			fmt.Println(string(m))
+			fmt.Println("------------ OVERHEAD END ------------")
+
 			return nil
 		}
 	}
