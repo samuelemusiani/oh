@@ -35,11 +35,11 @@ BINARY_SRC  = "./cmd/oh.go"
 DEFAULT_CLIENT_DIR = "/tmp/mftp-received"
 
 # Random file generation defaults
-GEN_FILE_COUNT   = 2
-GEN_FILE_MAX_BYTES = 1024 * 1024 * 512
-GEN_FILE_STRICY = False # generate files with exactly GEN_FILE_MAX_BYTES if True, otherwise random sizes up to that limit
+GEN_FILE_COUNT   = 20
+GEN_FILE_MAX_BYTES = 1024 * 1024* 64
+GEN_FILE_STRICY = True # generate files with exactly GEN_FILE_MAX_BYTES if True, otherwise random sizes up to that limit
 
-GEN_FILENAME_LENGTH = 8
+GEN_FILENAME_LENGTH = 4
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 
@@ -157,8 +157,8 @@ def generate_random_files(count: int = GEN_FILE_COUNT) -> tuple[str, list[str]]:
     """
     tmp_dir = tempfile.mkdtemp(prefix="mftp-server-files-")
     files   = []
-    for _ in range(count):
-        name = "".join(random.choices(string.ascii_lowercase, k=GEN_FILENAME_LENGTH)) + ".bin"
+    for i in range(count):
+        name = "".join(random.choices(string.ascii_lowercase, k=GEN_FILENAME_LENGTH))
         path = os.path.join(tmp_dir, name)
 
         if GEN_FILE_STRICY:
@@ -167,7 +167,8 @@ def generate_random_files(count: int = GEN_FILE_COUNT) -> tuple[str, list[str]]:
             size = random.randint(int(GEN_FILE_MAX_BYTES* 80/100), GEN_FILE_MAX_BYTES)
 
         with open(path, "wb") as f:
-            f.write(os.urandom(size))
+            f.write(bytes([i % 256]))
+            f.write(os.urandom(size-1))
         files.append(path)
         info(f"  Generated {name} ({size } B)")
     ok(f"Generated {count} files in {tmp_dir}")
