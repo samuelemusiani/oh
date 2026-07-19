@@ -54,11 +54,14 @@ func (s *Server) openFiles(paths []string) error {
 
 	s.files = files
 	for _, f := range s.files {
-		s.filesHashes[[32]byte(f.mt.Root())] = f
-
 		if _, ok := s.hashLookup[[32]byte(f.mt.Root())]; ok {
-			panic(fmt.Sprintf("duplicate file hash %x for file %s", f.mt.Root(), f.path))
+			// TODO: this implementation does not allow two files to have the same
+			// content. This is not a limitation of the protocol but of the
+			// implementation
+			panic("duplicate file content")
 		}
+
+		s.filesHashes[[32]byte(f.mt.Root())] = f
 
 		for _, n := range f.mt.GetAllNodes() {
 			s.hashLookup[[32]byte(n.Hash())] = f.mt
