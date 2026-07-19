@@ -305,6 +305,7 @@ func (mt *MerkleTree) PutLeaf(h []byte, index uint32) error {
 
 	if mt.t[absIndex].valid {
 		if slices.Equal(mt.t[absIndex].hash, h) {
+			mt.t[absIndex].validChilds = true
 			return nil
 		} else {
 			return fmt.Errorf("leaf already valid but with a different hash. old %s new %s", hex.EncodeToString(mt.t[absIndex].hash), hex.EncodeToString(h))
