@@ -19,7 +19,7 @@ const (
 	MessageTypeStreamPoll  // NOT IMPLEMENTED
 	MessageTypeStreamState // NOT IMPLEMENTED
 	MessageTypeFeedbackRequest
-	MessageTypeFeedbackFeedback
+	MessageTypeFeedback
 
 	// TODO: Calculate this based on MTU
 	// 1200 (MTU) - 20 (ipv4) - 8 (UDP) - 2 (header) = 1172
@@ -110,10 +110,12 @@ func ReadPacket(buff []byte) (Message, error) {
 }
 
 var messageRegistry = map[messageType]func() Message{
-	MessageTypeAdvertisement: func() Message { return &Advertisement{} },
-	MessageTypeMetadata:      func() Message { return &Metadata{} },
-	MessageTypeRequestLeaves: func() Message { return &RequestLeaves{} },
-	MessageTypeRequestLeaf:   func() Message { return &RequestLeaf{} },
-	MessageTypeData:          func() Message { return &Data{} },
-	MessageTypeMerkleTree:    func() Message { return &MerkleTree{} },
+	MessageTypeAdvertisement:   func() Message { return &Advertisement{} },
+	MessageTypeMetadata:        func() Message { return &Metadata{} },
+	MessageTypeRequestLeaves:   func() Message { return &RequestLeaves{} },
+	MessageTypeRequestLeaf:     func() Message { return &RequestLeaf{} },
+	MessageTypeData:            func() Message { return &Data{} },
+	MessageTypeMerkleTree:      func() Message { return &MerkleTree{} },
+	MessageTypeFeedbackRequest: func() Message { return &FeedbackRequest{} },
+	MessageTypeFeedback:        func() Message { return &Feedback{} },
 }
