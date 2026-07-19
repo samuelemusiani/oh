@@ -39,6 +39,13 @@ func (c *Client) handleMetadata(m *packet.Metadata) error {
 	}
 
 	for _, existing := range c.metadataBuff[m.ManifestHash] {
+		// TODO: this is not a greate check because different files with the same
+		// content are marked as duplicate but should not. We could check based on
+		// the hash of metadata packet, but at least we should save the others to
+		// avoid recomputing hashes every time.
+		// Even if we fix this check the client refers to files by data hash, but
+		// this is "wrong" in a sense that two different files with the same content
+		// would cause confusion and break something
 		if existing.DataHash == m.DataHash {
 			c.l["metadata"].Debug("Received duplicate metadata packet", "hash", htos(m.DataHash))
 			c.metadataBuffMutex.Unlock()
