@@ -111,8 +111,7 @@ func (s *Server) sendLoop() {
 		panic(s.fecEncoder.Run(s.sendCh, fecSend))
 	}()
 
-	// TODO: This is limited because client cannot keep up
-	rateLimit := int64(800)                      // MB/s
+	rateLimit := int64(1024 * 100)               // Kbit/s
 	rateLimit = int64(float64(rateLimit) * 1.06) // for approximation errors
 
 	printDataRate := true
@@ -122,13 +121,20 @@ func (s *Server) sendLoop() {
 	var batchSent atomic.Int64
 
 	if printDataRate {
-		intervalDatarate := 500 // ms
+		intervalDatarate := 1000 // ms
 		lastReset := time.Now()
 		go func() {
 			for {
 				if time.Since(lastReset) > time.Duration(intervalDatarate)*time.Millisecond {
-					mbit := float64(printBytesSent.Load()) / (1024 * 1024 * (float64(intervalDatarate) / 1000)) * 8
-					s.l.Info("data rate", "rate", fmt.Sprintf("%.2f Mbit/s", mbit), "rate2", fmt.Sprintf("%.2f MB/s", mbit/8))
+					kbit := float64(printBytesSent.Load()) / (1024 * (float64(intervalDatarate) / 1000)) * 8
+					unit1 := "Kbit/s"
+					unit2 := "KB/s"
+					if kbit > 1500 {
+						kbit = kbit / 1024
+						unit1 = "Mbit/s"
+						unit2 = "MB/s"
+					}
+					s.l.Info("data rate", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "rate2", fmt.Sprintf("%.2f %s", kbit/8, unit2))
 					s.l.Info("batch stats", "average batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
 					batchSizeCount.Store(0)
 					batchSent.Store(0)
@@ -144,10 +150,8 @@ func (s *Server) sendLoop() {
 	lastReset := time.Now()
 	// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
 
-	batchSize := 1
+	batchSize := 128
 	batch := make([][]byte, 0, batchSize)
-
-	maxBatchesSent := 0
 
 	sendBatch := func() {
 		if len(batch) == 0 {
@@ -167,16 +171,6 @@ func (s *Server) sendLoop() {
 			s.l.Error("error sending batch", "error", err)
 		}
 
-		// TODO: remove when we'll have a congestion control
-		if len(batch) >= batchSize {
-			maxBatchesSent++
-			if maxBatchesSent > 16 {
-				maxBatchesSent = 0
-				batchSize *= 2
-				batch = make([][]byte, 0, batchSize)
-			}
-		}
-
 		batch = batch[:0]
 	}
 
@@ -184,13 +178,10 @@ func (s *Server) sendLoop() {
 		select {
 		case data := <-fecSend:
 			mtPassed := time.Since(lastReset).Microseconds()
-			// Becuase we are using microseconds, we should count the 1e6 factor. But also we are measuring in
-			// Mega Bytes, so we should count the 1024*1024 factor. Becuase 1e6 ~= 1024*1024, we can just ignore
-			// the factors and use everything as is. This will result in a slightly lower rate than the
-			// specified rateLimit, but it is good enough for our purposes.
-			if (bytesToSend+int64(len(data)))*8 > rateLimit*mtPassed {
+			if (bytesToSend+int64(len(data)))*8*1e3 > rateLimit*mtPassed {
+				excessBits := (bytesToSend+int64(len(data)))*8*1e3 - rateLimit*mtPassed
 				sendBatch()
-				timeToWait := time.Duration(((bytesToSend+int64(len(data)))*8-rateLimit*mtPassed)*8/rateLimit) * time.Microsecond
+				timeToWait := time.Duration((excessBits)/rateLimit) * time.Microsecond
 				time.Sleep(timeToWait)
 			}
 
