@@ -22,7 +22,7 @@ const (
 	MessageTypeFeedback
 
 	// TODO: Calculate this based on MTU
-	// 1200 (MTU) - 20 (ipv4) - 8 (UDP) - 2 (header) = 1172
+	// 1200 (MTU) - 20 (ipv4) - 8 (UDP) - 2 (header) = 1170
 	MaxPayloadSize = 1170
 
 	// MaxPayloadSize - 76 (data header)
