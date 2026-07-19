@@ -111,8 +111,9 @@ func (s *Server) sendLoop() {
 		panic(s.fecEncoder.Run(s.sendCh, fecSend))
 	}()
 
-	// TODO: This is very limited because client cannot keep up
-	rateLimit := int64(800 / 8) // MB/s
+	// TODO: This is limited because client cannot keep up
+	rateLimit := int64(800)                      // MB/s
+	rateLimit = int64(float64(rateLimit) * 1.06) // for approximation errors
 
 	printDataRate := true
 	var printBytesSent atomic.Uint64
@@ -159,6 +160,8 @@ func (s *Server) sendLoop() {
 			printBytesSent.Add(uint64(len(batch[i])))
 		}
 
+		bytesToSend = 0
+		lastReset = time.Now()
 		err := s.multicastConn.SendBatch(batch)
 		if err != nil {
 			s.l.Error("error sending batch", "error", err)
@@ -185,15 +188,10 @@ func (s *Server) sendLoop() {
 			// Mega Bytes, so we should count the 1024*1024 factor. Becuase 1e6 ~= 1024*1024, we can just ignore
 			// the factors and use everything as is. This will result in a slightly lower rate than the
 			// specified rateLimit, but it is good enough for our purposes.
-			if bytesToSend+int64(len(data)) > rateLimit*mtPassed {
+			if (bytesToSend+int64(len(data)))*8 > rateLimit*mtPassed {
 				sendBatch()
-				timeToWait := time.Duration((bytesToSend+int64(len(data))-rateLimit*mtPassed)/rateLimit) * time.Microsecond
+				timeToWait := time.Duration(((bytesToSend+int64(len(data)))*8-rateLimit*mtPassed)*8/rateLimit) * time.Microsecond
 				time.Sleep(timeToWait)
-			}
-
-			if time.Since(lastReset) > 1000*time.Millisecond {
-				bytesToSend = 0
-				lastReset = time.Now()
 			}
 
 			bytesToSend += int64(len(data))
