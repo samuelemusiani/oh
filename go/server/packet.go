@@ -116,3 +116,11 @@ func MerkleTreePacket(mt *merkletree.MerkleTree, root [32]byte) (*packet.MerkleT
 		Nodes:    flatNodes,
 	}, nil
 }
+
+func FeedbackRequestPacket(id, timespan, feedbacks uint16) *packet.FeedbackRequest {
+	return &packet.FeedbackRequest{
+		RequestID:         id,
+		Timespan:          timespan,
+		NumberOfFeedbacks: feedbacks,
+	}
+}

@@ -168,7 +168,7 @@ func (s *scheduler) sortLeavesRequests() {
 							s.l.Error("error creating merkle tree packet", "error", err)
 							return
 						}
-						s.s.sendCh <- pkt
+						s.s.sendDataCh <- pkt
 					},
 				}
 
@@ -191,7 +191,7 @@ func (s *scheduler) sortLeavesRequests() {
 						// TODO: Based on the RFC, we should always put the manifest hash
 						// inside the metadata packet, even if the queried hash was a sub-tree.
 						// Probably we could have thought this better...
-						s.s.sendCh <- s.s.files[i].MetadataPacket([32]byte(mt.Root()))
+						s.s.sendDataCh <- s.s.files[i].MetadataPacket([32]byte(mt.Root()))
 					}
 					s.nBigRequests.Add(-1)
 				},
@@ -218,7 +218,7 @@ func (s *scheduler) sortLeavesRequests() {
 							s.l.Error("error creating merkle tree packet", "error", err)
 							return
 						}
-						s.s.sendCh <- pkt
+						s.s.sendDataCh <- pkt
 					},
 				}
 
@@ -254,7 +254,7 @@ func (s *scheduler) sortLeavesRequests() {
 
 						s.l.Debug("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
 						for _, pkt := range pkts {
-							s.s.sendCh <- &pkt
+							s.s.sendDataCh <- &pkt
 						}
 					}
 				},
@@ -285,7 +285,7 @@ func (s *scheduler) handleLeafRequests() {
 			s.smallRequestQueue <- request{
 				t: time.Now(),
 				f: func() {
-					s.s.sendCh <- s.s.files[r.r.Index].MetadataPacket([32]byte(mt.Root()))
+					s.s.sendDataCh <- s.s.files[r.r.Index].MetadataPacket([32]byte(mt.Root()))
 				},
 			}
 		// In this case the default is for files. If streams were implemented then
@@ -307,7 +307,7 @@ func (s *scheduler) handleLeafRequests() {
 						return
 					}
 					for _, pkt := range pkts {
-						s.s.sendCh <- &pkt
+						s.s.sendDataCh <- &pkt
 					}
 				},
 			}

@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	MaxChunkSize = 1024 * 1024
+	MaxChunkSize = 1024
 )
 
 // A Chunk represents a chunk of data that has an hash associated with it

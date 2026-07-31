@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,10 +38,17 @@ type Server struct {
 
 	currentManifest *merkletree.MerkleTree
 
-	sendCh    chan packet.Message
-	receiveCh chan packet.MessageWithSrc
+	sendDataCh chan packet.Message
+	sendNowCh  chan packet.Message
+	receiveCh  chan packet.MessageWithSrc
 
 	scheduler *scheduler
+
+	// No mutex for sendingLimit as it's on the hotpath
+	sendingLimit      atomic.Int64
+	ccMutex           sync.Mutex
+	sentPacketsNumber []uint32
+	lastCCReset       time.Time
 
 	l *slog.Logger
 }
@@ -78,8 +86,9 @@ func New(c oh.Config) (*Server, error) {
 		filesHashes: make(map[[32]byte]*file),
 		hashLookup:  make(map[[32]byte]*merkletree.MerkleTree),
 
-		sendCh:    make(chan packet.Message, 1024*1024),
-		receiveCh: make(chan packet.MessageWithSrc, 1024*1024),
+		sendDataCh: make(chan packet.Message, 1024*1024),
+		sendNowCh:  make(chan packet.Message, 32),
+		receiveCh:  make(chan packet.MessageWithSrc, 1024*1024),
 
 		l: logger,
 	}
@@ -108,11 +117,11 @@ func (s *Server) sendLoop() {
 	fecSend := make(chan internal.Packet, 1024*1024)
 	go func() {
 		// TODO: check for errors and handle them properly
-		panic(s.fecEncoder.Run(s.sendCh, fecSend))
+		panic(s.fecEncoder.Run(s.sendDataCh, fecSend))
 	}()
 
-	rateLimit := int64(1024 * 100)               // Kbit/s
-	rateLimit = int64(float64(rateLimit) * 1.06) // for approximation errors
+	s.sendingLimit.Store(100)                                          // Kbit/s
+	s.sendingLimit.Store(int64(float64(s.sendingLimit.Load()) * 1.06)) // for approximation errors
 
 	printDataRate := true
 	var printBytesSent atomic.Uint64
@@ -128,14 +137,14 @@ func (s *Server) sendLoop() {
 				if time.Since(lastReset) > time.Duration(intervalDatarate)*time.Millisecond {
 					kbit := float64(printBytesSent.Load()) / (1024 * (float64(intervalDatarate) / 1000)) * 8
 					unit1 := "Kbit/s"
-					unit2 := "KB/s"
+					// unit2 := "KB/s"
 					if kbit > 1500 {
 						kbit = kbit / 1024
 						unit1 = "Mbit/s"
-						unit2 = "MB/s"
+						// unit2 = "MB/s"
 					}
-					s.l.Info("data rate", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "rate2", fmt.Sprintf("%.2f %s", kbit/8, unit2))
-					s.l.Info("batch stats", "average batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
+					// s.l.Info("cc", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "rate2", fmt.Sprintf("%.2f %s", kbit/8, unit2), "avg batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
+					s.l.Info("cc", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "avg batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
 					batchSizeCount.Store(0)
 					batchSent.Store(0)
 					printBytesSent.Store(0)
@@ -176,12 +185,24 @@ func (s *Server) sendLoop() {
 
 	for {
 		select {
+		case p := <-s.sendNowCh:
+			pb, err := packet.WritePacket(p)
+			if err != nil {
+				s.l.Error("encoding packet", "error", err)
+
+				continue
+			}
+
+			err = s.multicastConn.Send(pb)
+			if err != nil {
+				s.l.Error("sending packet", "error", err)
+			}
 		case data := <-fecSend:
 			mtPassed := time.Since(lastReset).Microseconds()
-			if (bytesToSend+int64(len(data)))*8*1e3 > rateLimit*mtPassed {
-				excessBits := (bytesToSend+int64(len(data)))*8*1e3 - rateLimit*mtPassed
+			if (bytesToSend+int64(len(data)))*8*1e3 > s.sendingLimit.Load()*mtPassed {
+				excessBits := (bytesToSend+int64(len(data)))*8*1e3 - s.sendingLimit.Load()*mtPassed
 				sendBatch()
-				timeToWait := time.Duration((excessBits)/rateLimit) * time.Microsecond
+				timeToWait := time.Duration((excessBits)/s.sendingLimit.Load()) * time.Microsecond
 				time.Sleep(timeToWait)
 			}
 
@@ -225,6 +246,7 @@ func (s *Server) run() error {
 	go s.scheduler.run()
 	go s.sendLoop()
 	go s.receiveLoop()
+	go s.congestionControl()
 
 	advertisementTicker := time.NewTicker(advertisementInterval)
 
@@ -233,7 +255,7 @@ func (s *Server) run() error {
 	if err != nil {
 		return fmt.Errorf("error creating advertisement packet: %w", err)
 	}
-	s.sendCh <- adv
+	s.sendDataCh <- adv
 
 	for {
 		select {
@@ -244,7 +266,7 @@ func (s *Server) run() error {
 
 				continue
 			}
-			s.sendCh <- adv
+			s.sendNowCh <- adv
 
 		case msg := <-s.receiveCh:
 			err := s.handleMessage(msg)
