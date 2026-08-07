@@ -1,84 +1,28 @@
+use tokio::fs::{File, ReadDir};
 use zerocopy::TryFromBytes;
 
-use crate::error::OHProtocolError;
+use crate::{
+    error::OHProtocolError,
+    packet::{
+        AdvertisementPacket, DataPacket, FeedbackPacket, FeedbackRequestPacket, MerkleTreePacket,
+        MetadataPacket, MetadataPacketData, Packet, RequestLeafPacket, RequestLeavesPacket,
+    },
+};
 
-mod error;
+pub mod data;
+pub mod error;
+pub mod packet;
 mod zc;
 
-pub enum Packet<'a> {
-    Advertisement(AdvertisementPacket<'a>),
-    Metadata(MetadataPacket<'a>),
-    RequestLeaves(RequestLeavesPacket<'a>),
-    RequestLeaf(RequestLeafPacket<'a>),
-    Data(DataPacket<'a>),
-    MerkleTree(MerkleTreePacket<'a>),
-    FeedbackRequest(FeedbackRequestPacket<'a>),
-    Feedback(FeedbackPacket<'a>),
+// Type alias for a 256-bit hash
+pub type Hash = [u8; 32];
+
+pub async fn build_manifest_from_dir(dir: &ReadDir) -> Result<data::Manifest, OHProtocolError> {
+    todo!()
 }
 
-pub struct AdvertisementPacket<'a> {
-    hash: &'a zc::Hash,
-}
-
-pub struct MetadataPacket<'a> {
-    manifest_hash: &'a zc::Hash,
-    data_hash: &'a zc::Hash,
-    extra_metadata_hash: &'a zc::Hash,
-    data: MetadataPacketData<'a>,
-}
-
-pub enum MetadataPacketData<'a> {
-    FileMetadata {
-        merkle_tree_depth: u8,
-        size_bits: u8,
-        size: &'a [u8],
-        name_length: u8,
-        name: &'a [u8],
-    },
-    StreamMetadata {
-        stream_id: &'a zc::Hash,
-    },
-    DirectoryMetadata {
-        name_length: u8,
-        name: &'a [u8],
-    },
-}
-
-pub struct RequestLeavesPacket<'a> {
-    root_hash: &'a zc::Hash,
-}
-
-pub struct RequestLeafPacket<'a> {
-    root_hash: &'a zc::Hash,
-    index: u32,
-}
-
-pub struct DataPacket<'a> {
-    root_hash: &'a zc::Hash,
-    leaf_hash: &'a zc::Hash,
-    leaf_index: u32,
-    packet_index: u32,
-    length: u16,
-    data: &'a [u8],
-}
-
-pub struct MerkleTreePacket<'a> {
-    root_hash: &'a zc::Hash,
-    depth: u8,
-    nodes: &'a [zc::Hash],
-}
-
-pub struct FeedbackRequestPacket<'a> {
-    request_id: &'a u16,
-    timespan: &'a u16,
-    number_of_feedbacks: &'a u16,
-}
-
-pub struct FeedbackPacket<'a> {
-    request_id: &'a u16,
-    packet_index: &'a u16,
-    number_of_packets_received: &'a u16,
-    server_ip: &'a [u8; 16],
+pub async fn build_manifest_from_files(files: &[File]) -> Result<data::Manifest, OHProtocolError> {
+    todo!()
 }
 
 //TODO: Add explicit size checks for arrays

@@ -1,6 +1,6 @@
 use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes};
 
-pub(crate) type Hash = [u8; 32];
+use crate::Hash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, TryFromBytes, KnownLayout, Immutable)]
 #[repr(u8)]
