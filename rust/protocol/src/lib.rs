@@ -1,5 +1,5 @@
 use tokio::fs::{File, ReadDir};
-use zerocopy::TryFromBytes;
+use zerocopy::{IntoBytes, TryFromBytes};
 
 use crate::{
     error::OHProtocolError,
@@ -14,14 +14,50 @@ pub mod error;
 pub mod packet;
 mod zc;
 
+trait TryFromBase16: Sized {
+    type Error;
+
+    fn try_from(self) -> Result<Hash, Self::Error>;
+}
+
 // Type alias for a 256-bit hash
 pub type Hash = [u8; 32];
 
-pub async fn build_manifest_from_dir(dir: &ReadDir) -> Result<data::Manifest, OHProtocolError> {
-    todo!()
+impl TryFromBase16 for String {
+    type Error = OHProtocolError;
+
+    fn try_from(self) -> Result<Hash, Self::Error> {
+        let bytes = base16::decode(&self)?;
+        let hash: Hash = bytes
+            .as_bytes()
+            .try_into()
+            .map_err(|_| OHProtocolError::InvalidSize {
+                expected: 32,
+                actual: bytes.len(),
+            })?;
+        Ok(hash)
+    }
 }
 
-pub async fn build_manifest_from_files(files: &[File]) -> Result<data::Manifest, OHProtocolError> {
+pub async fn build_manifest_from_dir(
+    dir: &mut ReadDir,
+) -> Result<data::ManifestTree, OHProtocolError> {
+    let mut files: Vec<File> = Vec::new();
+    while let Some(entry) = dir.next_entry().await? {
+        let metadata = entry.metadata().await?;
+        if metadata.is_file() {
+            let file = File::open(entry.path()).await?;
+            files.push(file);
+        } else {
+            println!("Skipping non-file entry: {:?}", entry.path());
+        }
+    }
+    build_manifest_from_files(&files).await
+}
+
+pub async fn build_manifest_from_files(
+    files: &[File],
+) -> Result<data::ManifestTree, OHProtocolError> {
     todo!()
 }
 
@@ -172,4 +208,13 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet<'_>, OHProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_build_data_tree() {
+        let file = File::open("test_data/100MB.bin").await.unwrap();
+        let data_tree = data::DataTree::new(file).await.unwrap();
+        println!("Root hash: {:?}", data_tree.root_hash);
+        println!("Number of leaves: {}", data_tree.leaves.len());
+        assert_eq!(data_tree.leaves.len(), 4619);
+    }
 }

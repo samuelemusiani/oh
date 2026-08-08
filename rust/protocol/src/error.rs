@@ -12,6 +12,12 @@ pub enum OHProtocolError {
     EmptyPayload,
     #[error("Invalid version: {0}")]
     InvalidVersion(u8),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Invalid input string for base16 decoding")]
+    Base16Decode(#[from] base16::DecodeError),
+    #[error("Invalid size, expected {expected:?}, got {actual:?}")]
+    InvalidSize { expected: usize, actual: usize },
 }
 
 impl<AlignmentError, SizeError, ValidityError>
