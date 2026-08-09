@@ -4,8 +4,8 @@ use zerocopy::{IntoBytes, TryFromBytes};
 use crate::{
     error::OHProtocolError,
     packet::{
-        AdvertisementPacket, DataPacket, FeedbackPacket, FeedbackRequestPacket, MerkleTreePacket,
-        MetadataPacket, MetadataPacketData, Packet, RequestLeafPacket, RequestLeavesPacket,
+        AdvertisementPacket, DataPacket, FeedbackPacket, FeedbackRequestPacket, MerkleTreePacket, MetadataPacket, MetadataPacketData, Packet,
+        RequestLeafPacket, RequestLeavesPacket,
     },
 };
 
@@ -28,20 +28,12 @@ impl TryFromBase16 for String {
 
     fn try_from(self) -> Result<Hash, Self::Error> {
         let bytes = base16::decode(&self)?;
-        let hash: Hash = bytes
-            .as_bytes()
-            .try_into()
-            .map_err(|_| OHProtocolError::InvalidSize {
-                expected: 32,
-                actual: bytes.len(),
-            })?;
+        let hash: Hash = bytes.as_bytes().try_into().map_err(|_| OHProtocolError::InvalidSize { expected: 32, actual: bytes.len() })?;
         Ok(hash)
     }
 }
 
-pub async fn build_manifest_from_dir(
-    dir: &mut ReadDir,
-) -> Result<data::ManifestTree, OHProtocolError> {
+pub async fn build_manifest_from_dir(dir: &mut ReadDir) -> Result<data::ManifestTree, OHProtocolError> {
     let mut files: Vec<File> = Vec::new();
     while let Some(entry) = dir.next_entry().await? {
         let metadata = entry.metadata().await?;
@@ -55,9 +47,7 @@ pub async fn build_manifest_from_dir(
     build_manifest_from_files(&files).await
 }
 
-pub async fn build_manifest_from_files(
-    files: &[File],
-) -> Result<data::ManifestTree, OHProtocolError> {
+pub async fn build_manifest_from_files(files: &[File]) -> Result<data::ManifestTree, OHProtocolError> {
     todo!()
 }
 
@@ -73,9 +63,7 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet<'_>, OHProtocolError> {
     match header.packet_type {
         zc::PacketType::Advertisement => {
             let (advertisement, _rest) = zc::AdvertisementPacket::try_ref_from_prefix(data)?;
-            return Ok(Packet::Advertisement(AdvertisementPacket {
-                hash: &advertisement.hash,
-            }));
+            return Ok(Packet::Advertisement(AdvertisementPacket { hash: &advertisement.hash }));
         }
         zc::PacketType::Metadata => {
             let (metadata, rest) = zc::MetadataPacketHead::try_ref_from_prefix(data)?;
@@ -86,26 +74,22 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet<'_>, OHProtocolError> {
                     let file_metadata_3;
                     match file_metadata.size_bits {
                         0 => {
-                            let (file_metadata_2_, rest) =
-                                zc::FileMetadata_2::try_ref_from_prefix_with_elems(rest, 8)?;
+                            let (file_metadata_2_, rest) = zc::FileMetadata_2::try_ref_from_prefix_with_elems(rest, 8)?;
                             file_metadata_2 = file_metadata_2_;
                             file_metadata_3 = zc::FileMetadata_3::try_ref_from_bytes(rest)?;
                         }
                         1 => {
-                            let (file_metadata_2_, rest) =
-                                zc::FileMetadata_2::try_ref_from_prefix_with_elems(rest, 16)?;
+                            let (file_metadata_2_, rest) = zc::FileMetadata_2::try_ref_from_prefix_with_elems(rest, 16)?;
                             file_metadata_2 = file_metadata_2_;
                             file_metadata_3 = zc::FileMetadata_3::try_ref_from_bytes(rest)?;
                         }
                         2 => {
-                            let (file_metadata_2_, rest) =
-                                zc::FileMetadata_2::try_ref_from_prefix_with_elems(rest, 32)?;
+                            let (file_metadata_2_, rest) = zc::FileMetadata_2::try_ref_from_prefix_with_elems(rest, 32)?;
                             file_metadata_2 = file_metadata_2_;
                             file_metadata_3 = zc::FileMetadata_3::try_ref_from_bytes(rest)?;
                         }
                         3 => {
-                            let (file_metadata_2_, rest) =
-                                zc::FileMetadata_2::try_ref_from_prefix_with_elems(rest, 40)?;
+                            let (file_metadata_2_, rest) = zc::FileMetadata_2::try_ref_from_prefix_with_elems(rest, 40)?;
                             file_metadata_2 = file_metadata_2_;
                             file_metadata_3 = zc::FileMetadata_3::try_ref_from_bytes(rest)?;
                         }
@@ -132,10 +116,7 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet<'_>, OHProtocolError> {
                         manifest_hash: &metadata.manifest_hash,
                         data_hash: &metadata.data_hash,
                         extra_metadata_hash: &metadata.extra_metadata_hash,
-                        data: MetadataPacketData::DirectoryMetadata {
-                            name_length: directory_metadata.name_length,
-                            name: &directory_metadata.name,
-                        },
+                        data: MetadataPacketData::DirectoryMetadata { name_length: directory_metadata.name_length, name: &directory_metadata.name },
                     }));
                 }
                 zc::BlobType::Stream => {
@@ -144,25 +125,18 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet<'_>, OHProtocolError> {
                         manifest_hash: &metadata.manifest_hash,
                         data_hash: &metadata.data_hash,
                         extra_metadata_hash: &metadata.extra_metadata_hash,
-                        data: MetadataPacketData::StreamMetadata {
-                            stream_id: &stream_metadata.stream_id,
-                        },
+                        data: MetadataPacketData::StreamMetadata { stream_id: &stream_metadata.stream_id },
                     }));
                 }
             }
         }
         zc::PacketType::RequestLeaves => {
             let request_leaves = zc::RequestLeavesPacket::try_ref_from_bytes(data)?;
-            return Ok(Packet::RequestLeaves(RequestLeavesPacket {
-                root_hash: &request_leaves.root_hash,
-            }));
+            return Ok(Packet::RequestLeaves(RequestLeavesPacket { root_hash: &request_leaves.root_hash }));
         }
         zc::PacketType::RequestLeaf => {
             let request_leaf = zc::RequestLeafPacket::try_ref_from_bytes(data)?;
-            return Ok(Packet::RequestLeaf(RequestLeafPacket {
-                root_hash: &request_leaf.root_hash,
-                index: request_leaf.index,
-            }));
+            return Ok(Packet::RequestLeaf(RequestLeafPacket { root_hash: &request_leaf.root_hash, index: request_leaf.index }));
         }
         zc::PacketType::Data => {
             let data_packet = zc::DataPacket::try_ref_from_bytes(data)?;
@@ -201,6 +175,64 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet<'_>, OHProtocolError> {
                 number_of_packets_received: &feedback_packet.number_of_packets_received,
                 server_ip: &feedback_packet.server_ip,
             }));
+        }
+    }
+}
+
+//TODO: The alignment of some of the packets is broken, so we need to build them manually without relying on zerocopy.
+//TODO: Some packets have unknwon length arrays, we need to build them manually
+pub fn encode_packet(packet: Packet) -> Result<Vec<u8>, OHProtocolError> {
+    match packet {
+        Packet::Advertisement(advertisement_packet) => {
+            let zc_packet = zc::AdvertisementPacket::new(*advertisement_packet.hash);
+            return Ok(zc_packet.as_bytes().to_vec());
+        }
+        Packet::Metadata(metadata_packet) => {
+            let blob_type = match metadata_packet.data {
+                MetadataPacketData::FileMetadata { .. } => zc::BlobType::File,
+                MetadataPacketData::DirectoryMetadata { .. } => zc::BlobType::Directory,
+                MetadataPacketData::StreamMetadata { .. } => zc::BlobType::Stream,
+            };
+            let zc_packet_head = zc::MetadataPacketHead::new(
+                *metadata_packet.manifest_hash,
+                *metadata_packet.data_hash,
+                *metadata_packet.extra_metadata_hash,
+                blob_type,
+            );
+            match metadata_packet.data {
+                MetadataPacketData::FileMetadata { merkle_tree_depth, size_bits, size, name_length, name } => {
+                    let zc_file_metadata_1 = zc::FileMetadata_1::new(merkle_tree_depth, size_bits);
+                    // Can't build to structs because the size of the arrays is not known at compile time, so we have to build the bytes manually
+                    let packet_bytes = [zc_packet_head.as_bytes(), zc_file_metadata_1.as_bytes(), size, &[name_length], name].concat();
+                    return Ok(packet_bytes);
+                }
+                MetadataPacketData::StreamMetadata { .. } => {
+                    todo!("Streams will not be implemented in this version")
+                }
+                MetadataPacketData::DirectoryMetadata { .. } => {
+                    todo!("Sub directory metadata will not be implemented in this version")
+                }
+            }
+        }
+        Packet::RequestLeaves(request_leaves_packet) => {
+            let zc_packet = zc::RequestLeavesPacket::new(*request_leaves_packet.root_hash);
+            return Ok(zc_packet.as_bytes().to_vec());
+        }
+        Packet::RequestLeaf(request_leaf_packet) => {
+            let zc_packet = zc::RequestLeafPacket::new(*request_leaf_packet.root_hash, request_leaf_packet.index);
+            return Ok(zc_packet.as_bytes().to_vec());
+        }
+        Packet::Data(data_packet) => todo!(),
+        Packet::MerkleTree(merkle_tree_packet) => todo!(),
+        Packet::FeedbackRequest(feedback_request_packet) => todo!(),
+        Packet::Feedback(feedback_packet) => {
+            let zc_packet = zc::FeedbackPacket::new(
+                *feedback_packet.request_id,
+                *feedback_packet.packet_index,
+                *feedback_packet.number_of_packets_received,
+                *feedback_packet.server_ip,
+            );
+            return Ok(zc_packet.as_bytes().to_vec());
         }
     }
 }

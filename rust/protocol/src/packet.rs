@@ -23,20 +23,9 @@ pub struct MetadataPacket<'a> {
 }
 
 pub enum MetadataPacketData<'a> {
-    FileMetadata {
-        merkle_tree_depth: u8,
-        size_bits: u8,
-        size: &'a [u8],
-        name_length: u8,
-        name: &'a [u8],
-    },
-    StreamMetadata {
-        stream_id: &'a Hash,
-    },
-    DirectoryMetadata {
-        name_length: u8,
-        name: &'a [u8],
-    },
+    FileMetadata { merkle_tree_depth: u8, size_bits: u8, size: &'a [u8], name_length: u8, name: &'a [u8] },
+    StreamMetadata { stream_id: &'a Hash },
+    DirectoryMetadata { name_length: u8, name: &'a [u8] },
 }
 
 pub struct RequestLeavesPacket<'a> {
