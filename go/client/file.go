@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"sync"
 	"time"
 
 	"codeberg.org/go-mmap/mmap"
@@ -171,8 +172,9 @@ type chunkHandler struct {
 	// if the file is complete.
 	totalSize uint64
 
-	chunksInfo map[uint32]*chunkInfo
-	dataMap    map[uint32][]*dataInChunk
+	rwChunksInfoLock sync.RWMutex
+	chunksInfo       map[uint32]*chunkInfo
+	dataMap          map[uint32][]*dataInChunk
 
 	// Because we don't know the size of each chunk, we need to keep track of
 	// the offset of each chunk in the file.
@@ -205,7 +207,9 @@ func (ch *chunkHandler) findTotalSize(c *Client) {
 // Writes a complete chunk to the file. It expects the chunk to be complet
 // and verified before call
 func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
+	ch.rwChunksInfoLock.RLock()
 	mc, ok := ch.chunksInfo[id]
+	ch.rwChunksInfoLock.RUnlock()
 	if !ok {
 		panic(fmt.Sprintf("chunk metadata not found for chunk %d, this should never happen", id))
 	}
@@ -297,7 +301,9 @@ func (ch *chunkHandler) addData(c *Client, data *dataInChunk) error {
 		return nil
 	}
 
+	ch.rwChunksInfoLock.RLock()
 	mc, ok := ch.chunksInfo[data.chunkID]
+	ch.rwChunksInfoLock.RUnlock()
 	if !ok {
 		mc = &chunkInfo{
 			hash:               data.chunkHash,
@@ -311,7 +317,9 @@ func (ch *chunkHandler) addData(c *Client, data *dataInChunk) error {
 		// Because the hash that we are receiving is a leaf hash, it has the
 		// depth (0) prepended to it
 		mc.currentRollingHash.Write([]byte{0})
+		ch.rwChunksInfoLock.Lock()
 		ch.chunksInfo[data.chunkID] = mc
+		ch.rwChunksInfoLock.Unlock()
 	} else {
 		if mc.hash != data.chunkHash || mc.id != data.chunkID {
 			return fmt.Errorf("chunk metadata mismatch for chunk %d: expected hash %x, got hash %x", data.chunkID, mc.hash, data.chunkHash)
@@ -348,9 +356,11 @@ func (ch *chunkHandler) addData(c *Client, data *dataInChunk) error {
 	ch.dataMap[data.chunkID] = ch.dataMap[data.chunkID][:mc.lastPacketIndex] // Trim the slice to the actual size
 
 	ch.l.Debug("chunk complete", "file_hash", htos(ch.fileHash), "chunk_id", data.chunkID, "chunk_hash", htos(data.chunkHash))
+	ch.rwChunksInfoLock.RLock()
 	ch.chunksInfo[data.chunkID].complete = true
 
 	ch.chunksInfo[data.chunkID].reRequest.Stop()
+	ch.rwChunksInfoLock.RUnlock()
 
 	// Write chunk to file
 	err := ch.writeChunk(c, data.chunkID)
@@ -406,12 +416,13 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	cHandler.findTotalSize(c)
 
 	// This can go in a separate routing
-	// TODO: Check if acceses on shared map can cause panics (probably :) )
 	go func() {
 		for {
 			chunkID := <-cHandler.reRequest
 			// We need to re-request a particular chunk
+			cHandler.rwChunksInfoLock.RLock()
 			chInfo, ok := cHandler.chunksInfo[chunkID]
+			cHandler.rwChunksInfoLock.RUnlock()
 			if !ok {
 				// TODO: check this. Maybe if time fires but in the meantime we receive
 				// the last chunk block and we finish it (?).
@@ -473,7 +484,9 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 			// We need to mark the tree as completed
 			c.treesMapMutex.Lock()
+			cHandler.rwChunksInfoLock.RLock()
 			totChunks := uint32(len(cHandler.chunksInfo))
+			cHandler.rwChunksInfoLock.RUnlock()
 			calculatedLeafs := merkletree.NextPowerOfTwo(totChunks)
 			h := hashFunc()
 			h.Write([]byte{0})
@@ -518,7 +531,9 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			// on file size and chunk size. But for now we will just request all
 			// missing chunks up to the depth of the Merkle tree.
 			for i := range merkletree.LeafsFromDepth(fileDataFromMetadata(file.metadata).MerkleTreeDepth) {
+				cHandler.rwChunksInfoLock.RLock()
 				_, ok := cHandler.chunksInfo[uint32(i)]
+				cHandler.rwChunksInfoLock.RUnlock()
 				if ok {
 					continue
 				}
@@ -544,7 +559,9 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 // that we have received. This is faster becauase we already calculated the
 // hashes of the chunks (leaves)
 func (ch *chunkHandler) merkleTreeForFileFromChunks() (*merkletree.MerkleTree, error) {
+	ch.rwChunksInfoLock.RLock()
 	nChunks := len(ch.chunksInfo)
+	ch.rwChunksInfoLock.RUnlock()
 	calculatedLeafs := merkletree.NextPowerOfTwo(uint32(nChunks))
 	mt, err := merkletree.NewMerkleTree(calculatedLeafs, func(leaf uint32) ([]byte, error) {
 		if leaf >= uint32(nChunks) {
@@ -552,7 +569,10 @@ func (ch *chunkHandler) merkleTreeForFileFromChunks() (*merkletree.MerkleTree, e
 			h.Write([]byte{0})
 			return h.Sum(nil), nil
 		}
-		return ch.chunksInfo[leaf].hash[:], nil
+		ch.rwChunksInfoLock.RLock()
+		hash := ch.chunksInfo[leaf].hash[:]
+		ch.rwChunksInfoLock.RUnlock()
+		return hash, nil
 	}, hashFunc())
 	if err != nil {
 		return nil, fmt.Errorf("could not create Merkle tree: %w", err)
