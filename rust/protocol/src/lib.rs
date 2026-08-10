@@ -1,7 +1,10 @@
+use std::path::PathBuf;
+
 use tokio::fs::{File, ReadDir};
 use zerocopy::{IntoBytes, TryFromBytes};
 
 use crate::{
+    data::Metadata,
     error::OHProtocolError,
     packet::{
         AdvertisementPacket, DataPacket, FeedbackPacket, FeedbackRequestPacket, MerkleTreePacket, MetadataPacket, MetadataPacketData, Packet,
@@ -34,12 +37,11 @@ impl TryFromBase16 for String {
 }
 
 pub async fn build_manifest_from_dir(dir: &mut ReadDir) -> Result<data::ManifestTree, OHProtocolError> {
-    let mut files: Vec<File> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
     while let Some(entry) = dir.next_entry().await? {
         let metadata = entry.metadata().await?;
         if metadata.is_file() {
-            let file = File::open(entry.path()).await?;
-            files.push(file);
+            files.push(entry.path());
         } else {
             println!("Skipping non-file entry: {:?}", entry.path());
         }
@@ -47,8 +49,16 @@ pub async fn build_manifest_from_dir(dir: &mut ReadDir) -> Result<data::Manifest
     build_manifest_from_files(&files).await
 }
 
-pub async fn build_manifest_from_files(files: &[File]) -> Result<data::ManifestTree, OHProtocolError> {
-    todo!()
+pub async fn build_manifest_from_files(files: &[PathBuf]) -> Result<data::ManifestTree, OHProtocolError> {
+    let mut metadata: Vec<Metadata> = Vec::new();
+    for file_path in files {
+        let file_name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let file = File::open(file_path).await?;
+        let file_metadata = data::FileMetadata::new(file_name, file).await?;
+        metadata.push(Metadata::File(file_metadata));
+    }
+    let manifest_tree = data::ManifestTree::new(metadata).await?;
+    Ok(manifest_tree)
 }
 
 //TODO: Add explicit size checks for arrays
@@ -222,9 +232,45 @@ pub fn encode_packet(packet: Packet) -> Result<Vec<u8>, OHProtocolError> {
             let zc_packet = zc::RequestLeafPacket::new(*request_leaf_packet.root_hash, request_leaf_packet.index);
             return Ok(zc_packet.as_bytes().to_vec());
         }
-        Packet::Data(data_packet) => todo!(),
-        Packet::MerkleTree(merkle_tree_packet) => todo!(),
-        Packet::FeedbackRequest(feedback_request_packet) => todo!(),
+        Packet::Data(data_packet) => {
+            let header = zc::PacketHeader { version: 1, packet_type: zc::PacketType::Data };
+            let packet_bytes = [
+                header.as_bytes(),
+                data_packet.root_hash,
+                data_packet.leaf_hash,
+                &data_packet.leaf_index.to_be_bytes(),
+                &data_packet.packet_index.to_be_bytes(),
+                0u16.to_be_bytes().as_ref(),
+                &data_packet.length.to_be_bytes(),
+                data_packet.data,
+            ]
+            .concat();
+            return Ok(packet_bytes);
+        }
+        Packet::MerkleTree(merkle_tree_packet) => {
+            let header = zc::PacketHeader { version: 1, packet_type: zc::PacketType::MerkleTree };
+            let packet_bytes = [
+                header.as_bytes(),
+                merkle_tree_packet.root_hash,
+                0u8.to_be_bytes().as_ref(),
+                merkle_tree_packet.depth.to_be_bytes().as_ref(),
+                merkle_tree_packet.nodes.concat().as_ref(),
+            ]
+            .concat();
+            return Ok(packet_bytes);
+        }
+        Packet::FeedbackRequest(feedback_request_packet) => {
+            let header = zc::PacketHeader { version: 1, packet_type: zc::PacketType::FeedbackRequest };
+            let packet_bytes = [
+                header.as_bytes(),
+                feedback_request_packet.request_id.to_be_bytes().as_ref(),
+                0u8.to_be_bytes().as_ref(),
+                feedback_request_packet.timespan.to_be_bytes().as_ref(),
+                feedback_request_packet.number_of_feedbacks.to_be_bytes().as_ref(),
+            ]
+            .concat();
+            return Ok(packet_bytes);
+        }
         Packet::Feedback(feedback_packet) => {
             let zc_packet = zc::FeedbackPacket::new(
                 *feedback_packet.request_id,
@@ -248,5 +294,30 @@ mod tests {
         println!("Root hash: {:?}", data_tree.root_hash);
         println!("Number of leaves: {}", data_tree.leaves.len());
         assert_eq!(data_tree.leaves.len(), 4619);
+    }
+
+    #[tokio::test]
+    async fn test_build_manifest_tree() {
+        let mut dir = tokio::fs::read_dir("test_data").await.unwrap();
+        let manifest_tree = build_manifest_from_dir(&mut dir).await.unwrap();
+        println!("Root hash: {:?}", manifest_tree.root_hash);
+        println!("Number of files: {}", manifest_tree.metadata.len());
+        for metadata in &manifest_tree.metadata {
+            match metadata {
+                Metadata::File(file_metadata) => {
+                    println!(
+                        "File: {}, Metadata Hash: {:?}, Data Hash: {:?}",
+                        file_metadata.name, file_metadata.hash, file_metadata.data_tree.root_hash
+                    );
+                }
+                Metadata::Directory => {
+                    println!("Directory");
+                }
+                Metadata::Stream => {
+                    println!("Stream");
+                }
+            }
+        }
+        assert_eq!(manifest_tree.metadata.len(), 4);
     }
 }

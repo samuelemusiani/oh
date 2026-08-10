@@ -18,7 +18,7 @@ pub struct ManifestTree {
 }
 
 impl ManifestTree {
-    async fn new(metadata: Vec<Metadata>) -> Result<Self, OHProtocolError> {
+    pub async fn new(metadata: Vec<Metadata>) -> Result<Self, OHProtocolError> {
         let mut level = 1;
         let mut intermediate_hashes: Vec<Hash> = metadata
             .iter()
@@ -71,7 +71,7 @@ impl FileMetadata {
             data_hash: &data_tree.root_hash,
             extra_metadata_hash: &[0; 32],
             data: crate::packet::MetadataPacketData::FileMetadata {
-                merkle_tree_depth: 0,
+                merkle_tree_depth: data_tree.height,
                 size_bits: 0, // File size is only u64 so we can hardcode this to 0
                 size: file_size.as_slice(),
                 name_length: filename.len() as u8,
@@ -88,6 +88,7 @@ pub struct DataTree {
     pub root_hash: Hash,
     pub leaves: Vec<DataLeaf>,
     pub file: File,
+    pub height: u8,
 }
 #[derive(Debug)]
 pub struct DataLeaf {
@@ -120,8 +121,9 @@ impl DataTree {
             leaves.push(leaf);
         }
         let mut intermediate_hashes: Vec<Hash> = leaves.iter().map(|leaf| leaf.hash).collect();
-        let mut level = 1;
+        let mut level: u8 = 0;
         while intermediate_hashes.len() > 1 {
+            level = level.checked_add(1).unwrap();
             let mut next_level_hashes = Vec::new();
             for i in (0..intermediate_hashes.len()).step_by(2) {
                 if i + 1 < intermediate_hashes.len() {
@@ -136,9 +138,8 @@ impl DataTree {
                 }
             }
             intermediate_hashes = next_level_hashes;
-            level += 1;
         }
         let root_hash = intermediate_hashes[0];
-        Ok(Self { root_hash, leaves, file })
+        Ok(Self { root_hash, leaves, file, height: level })
     }
 }
