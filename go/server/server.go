@@ -86,9 +86,9 @@ func New(c oh.Config) (*Server, error) {
 		filesHashes: make(map[[32]byte]*file),
 		hashLookup:  make(map[[32]byte]*merkletree.MerkleTree),
 
-		sendDataCh: make(chan packet.Message, 1024*1024),
+		sendDataCh: make(chan packet.Message, 8),
 		sendNowCh:  make(chan packet.Message, 32),
-		receiveCh:  make(chan packet.MessageWithSrc, 1024*1024),
+		receiveCh:  make(chan packet.MessageWithSrc, 1024),
 
 		l: logger,
 	}
@@ -114,7 +114,7 @@ func (s *Server) SendFiles(files []string) error {
 }
 
 func (s *Server) sendLoop() {
-	fecSend := make(chan internal.Packet, 1024*1024)
+	fecSend := make(chan internal.Packet, 8)
 	go func() {
 		// TODO: check for errors and handle them properly
 		panic(s.fecEncoder.Run(s.sendDataCh, fecSend))
