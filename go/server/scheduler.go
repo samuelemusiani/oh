@@ -271,7 +271,7 @@ func (s *scheduler) sortLeavesRequests() {
 func (s *scheduler) handleLeafRequests() {
 	for {
 		r := <-s.leafQueue
-		s.l.Debug("Received leaf request packet", "hash", htos(r.r.RootHash), "index", r.r.Index)
+		s.l.Warn("Received leaf request packet", "hash", htos(r.r.RootHash), "index", r.r.Index)
 
 		mt, ok := s.s.hashLookup[r.r.RootHash]
 		if !ok {
@@ -306,14 +306,17 @@ func (s *scheduler) handleLeafRequests() {
 			s.smallRequestQueue <- request{
 				t: time.Now(),
 				f: func() {
+					fmt.Println("REAL SENDING START", r.r.Index)
 					pkts, err := file.ChunkPacket(r.r.Index)
 					if err != nil {
 						s.l.Error("error creating chunk packet", "file", file.name, "chunk_index", r.r.Index, "error", err)
 						return
 					}
+					fmt.Println("SENDING ", len(pkts), "FOR ", r.r.Index, "len", len(s.s.sendDataCh), "leaf_index", pkts[0].LeafIndex)
 					for _, pkt := range pkts {
 						s.s.sendDataCh <- &pkt
 					}
+					fmt.Println("REAL SENDING END", r.r.Index)
 				},
 			}
 		}

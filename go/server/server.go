@@ -47,8 +47,12 @@ type Server struct {
 	// No mutex for sendingLimit as it's on the hotpath
 	sendingLimit      atomic.Int64
 	ccMutex           sync.Mutex
-	sentPacketsNumber []uint32
-	lastCCReset       time.Time
+	sentPacketsNumber []uint64
+	sentPackets       atomic.Uint64
+	clientFeedbacks   map[[16]byte]*clientFeedback
+	latestID          uint16
+	lastLoss          time.Time
+	limitedByRate     atomic.Bool
 
 	l *slog.Logger
 }
@@ -89,6 +93,9 @@ func New(c oh.Config) (*Server, error) {
 		sendDataCh: make(chan packet.Message, 8),
 		sendNowCh:  make(chan packet.Message, 32),
 		receiveCh:  make(chan packet.MessageWithSrc, 1024),
+
+		clientFeedbacks: make(map[[16]byte]*clientFeedback),
+		lastLoss:        time.Now(),
 
 		l: logger,
 	}
@@ -159,13 +166,14 @@ func (s *Server) sendLoop() {
 	lastReset := time.Now()
 	// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
 
-	batchSize := 128
+	batchSize := 1
 	batch := make([][]byte, 0, batchSize)
 
 	sendBatch := func() {
 		if len(batch) == 0 {
 			return
 		}
+		s.sentPackets.Add(uint64(len(batch)))
 		batchSizeCount.Add(int64(len(batch)))
 		batchSent.Add(1)
 
@@ -173,8 +181,15 @@ func (s *Server) sendLoop() {
 			printBytesSent.Add(uint64(len(batch[i])))
 		}
 
+		// for i := range batch {
+		// 	if batch[i][1] == 4 {
+		// 		fmt.Println("type: ", batch[i][1], "chunk_id", binary.BigEndian.Uint32(batch[i][66:70]))
+		// 	}
+		// }
+
 		bytesToSend = 0
 		lastReset = time.Now()
+		// fmt.Println("sent packet", "time", time.Now().UnixMicro())
 		err := s.multicastConn.SendBatch(batch)
 		if err != nil {
 			s.l.Error("error sending batch", "error", err)
@@ -193,6 +208,11 @@ func (s *Server) sendLoop() {
 				continue
 			}
 
+			// Don't count the feedback request
+			if p.Type() != packet.MessageTypeFeedbackRequest {
+				sendBatch()
+				s.sentPackets.Add(1)
+			}
 			err = s.multicastConn.Send(pb)
 			if err != nil {
 				s.l.Error("sending packet", "error", err)
@@ -200,10 +220,13 @@ func (s *Server) sendLoop() {
 		case data := <-fecSend:
 			mtPassed := time.Since(lastReset).Microseconds()
 			if (bytesToSend+int64(len(data)))*8*1e3 > s.sendingLimit.Load()*mtPassed {
+				s.limitedByRate.Store(true)
 				excessBits := (bytesToSend+int64(len(data)))*8*1e3 - s.sendingLimit.Load()*mtPassed
 				sendBatch()
 				timeToWait := time.Duration((excessBits)/s.sendingLimit.Load()) * time.Microsecond
 				time.Sleep(timeToWait)
+			} else {
+				s.limitedByRate.Store(false)
 			}
 
 			bytesToSend += int64(len(data))
@@ -284,32 +307,38 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 	case packet.MessageTypeAdvertisement:
 		adv, ok := msg.MSG.(*packet.Advertisement)
 		if !ok {
-			panic("message type is advertisement but message is not of type *packet.Advertisement")
+			panic("message type is not of type Advertisement")
 		}
 
 		h := htos(adv.Hash)
 		s.l.Debug("Received advertisement packet", "src", msg.Src, "hash", h)
-		return nil
 	case packet.MessageTypeMetadata:
 		s.l.Debug("Received metadata packet")
-		return nil
 	case packet.MessageTypeRequestLeaves:
 		req, ok := msg.MSG.(*packet.RequestLeaves)
 		if !ok {
-			panic("message type is request but message is not of type *packet.Request")
+			panic("message type is not of type RequestLeaves")
 		}
 		s.scheduler.enqueueLeavesRequest(req, msg.Src)
-		return nil
 
 	case packet.MessageTypeRequestLeaf:
 		req, ok := msg.MSG.(*packet.RequestLeaf)
 		if !ok {
-			panic("message type is request but message is not of type *packet.Request")
+			panic("message type is not of type RequestLeaf")
 		}
 		s.scheduler.enqueueLeafRequest(req, msg.Src)
-		return nil
+
+	case packet.MessageTypeFeedback:
+		f, ok := msg.MSG.(*packet.Feedback)
+		if !ok {
+			panic("message is not of type Feedback")
+		}
+
+		s.handleFeedback(f, msg.Src)
 
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
+
+	return nil
 }

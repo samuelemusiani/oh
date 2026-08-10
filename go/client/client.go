@@ -63,6 +63,8 @@ type Client struct {
 	sendCh    chan packet.Message
 	receiveCh chan packet.MessageWithSrc
 
+	cc cc
+
 	scheduler *scheduler
 
 	l map[string]*slog.Logger
@@ -98,6 +100,7 @@ func New(c oh.Config) (*Client, error) {
 	}
 
 	client.scheduler = newScheduler(client)
+	client.initCC()
 
 	return client, nil
 }
@@ -150,7 +153,7 @@ func (c *Client) sendLoop(bytesSent *uint64) {
 
 	go func() {
 		for {
-			fmt.Println("Packets sent:", packetsSent.Load(), "leaves", leavesRequested.Load(), "leaf", leafRequested.Load())
+			// fmt.Println("Packets sent:", packetsSent.Load(), "leaves", leavesRequested.Load(), "leaf", leafRequested.Load())
 			packetsSent.Store(0)
 			leavesRequested.Store(0)
 			leafRequested.Store(0)
@@ -229,6 +232,8 @@ func (c *Client) run() error {
 	for {
 		select {
 		case msg := <-c.receiveCh:
+			// fmt.Println("adding packet", "type", msg.MSG.Type(), "time", time.Now().UnixMicro(), "len", len(c.receiveCh))
+			c.addPacketReceivedByServerIP([16]byte(msg.Src.To16()))
 			err := c.handleMessage(msg)
 			if err != nil {
 				c.l["global"].Error("error handling message", "error", err)
@@ -369,6 +374,12 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 			}
 		}()
 
+	case packet.MessageTypeFeedbackRequest:
+		pkt := msg.MSG.(*packet.FeedbackRequest)
+		c.l["mhandler"].Info("Received feedback request packet", "id", pkt.RequestID, "timespan", pkt.Timespan, "number", pkt.NumberOfFeedbacks, "src", msg.Src.String())
+
+		c.handleFeedbackRequest(pkt, msg.Src)
+
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
@@ -400,6 +411,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"file":      {},
 		"request":   {},
 		"scheduler": {},
+		"cc":        {},
 	}
 
 	loggers := map[string]*slog.Logger{
@@ -412,6 +424,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"file":      makeLogger("file", levels["file"]),
 		"request":   makeLogger("request", levels["request"]),
 		"scheduler": makeLogger("scheduler", levels["scheduler"]),
+		"cc":        makeLogger("cc", levels["cc"]),
 	}
 
 	// Change level at any time, takes effect immediately:
@@ -424,6 +437,7 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["file"].Set(slog.LevelInfo)
 	levels["request"].Set(slog.LevelInfo)
 	levels["scheduler"].Set(slog.LevelWarn)
+	levels["cc"].Set(slog.LevelDebug)
 
 	return loggers
 }

@@ -151,7 +151,8 @@ type chunkInfo struct {
 	lastPacketIndex    uint32
 
 	// Timer to re-request missing packets for this chunk
-	reRequest *time.Timer
+	reRequest   *time.Timer
+	lastTimeout time.Duration
 }
 
 type chunkHandler struct {
@@ -313,6 +314,7 @@ func (ch *chunkHandler) addData(c *Client, data *dataInChunk) error {
 			reRequest: time.AfterFunc(timeoutPartialChunkRequest, func() {
 				ch.reRequest <- data.chunkID
 			}),
+			lastTimeout: timeoutPartialChunkRequest,
 		}
 		// Because the hash that we are receiving is a leaf hash, it has the
 		// depth (0) prepended to it
@@ -428,9 +430,11 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				// the last chunk block and we finish it (?).
 				panic("if timer has fired we must have the chunksInfo")
 			}
-			chInfo.reRequest.Reset(timeoutPartialChunkRequest) // TODO: maybe an exponential backoff would be better
+			chInfo.lastTimeout = max(chInfo.lastTimeout*2, 10*timeoutPartialChunkRequest)
+			chInfo.reRequest.Reset(chInfo.lastTimeout) // TODO: maybe an exponential backoff would be better
 			// We can request the chunk again, by hash :)
 
+			fmt.Println("requesting chunk", chunkID)
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
@@ -448,73 +452,9 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 		}
 	}()
 
-	for {
-		select {
-		case dataChunk := <-file.dataChan:
-			c.l["file"].Debug("received data packet for file", "file_hash", htos(hf))
-			c.l["file"].Debug("data info", "chunk_hash", htos(dataChunk.chunkHash), "chunk_id", dataChunk.chunkID, "packet_index", dataChunk.packetIndex)
-
-			cHandler.timer.Reset(timeoutMissingChunkRequest)
-
-			err := cHandler.addData(c, dataChunk)
-			if err != nil {
-				c.l["file"].Error("error adding chunk for file", "file_hash", htos(hf), "error", err)
-			}
-
-			if cHandler.totalWritten < cHandler.totalSize {
-				c.l["file"].Debug("file not complete yet", "file_hash", htos(hf), "total_written", cHandler.totalWritten, "total_size", cHandler.totalSize, "chunksToWrite", cHandler.chunksToWrite)
-				continue
-			}
-
-			mt, err := cHandler.merkleTreeForFileFromChunks()
-			if err != nil {
-				c.l["file"].Error("error creating Merkle tree for file", "file_hash", htos(hf), "error", err)
-				continue
-			}
-			if mt == nil {
-				c.l["file"].Debug("Merkle tree for file is not complete yet", "file_hash", htos(hf))
-				continue
-			}
-
-			root := mt.Root()
-			if !bytes.Equal(root, hf[:]) {
-				// c.l["file"].Debug("Merkle tree root does not match file hash", "file_hash", htos(hf), "merkle_root", htos([32]byte(root)))
-				continue
-			}
-
-			// We need to mark the tree as completed
-			c.treesMapMutex.Lock()
-			cHandler.rwChunksInfoLock.RLock()
-			totChunks := uint32(len(cHandler.chunksInfo))
-			cHandler.rwChunksInfoLock.RUnlock()
-			calculatedLeafs := merkletree.NextPowerOfTwo(totChunks)
-			h := hashFunc()
-			h.Write([]byte{0})
-			hash := h.Sum(nil)
-			for i := totChunks; i < calculatedLeafs; i++ {
-				err := c.trees[hf].mt.PutLeaf(hash, i)
-				if err != nil {
-					panic("putting leaf")
-				}
-			}
-			c.treesMapMutex.Unlock()
-
-			// If we reach here, we have received all chunks for the file and the Merkle tree is complete
-			c.l["file"].Info("file download complete", "file_hash", htos(hf))
-
-			go c.scheduler.signalFileComplete(hf)
-
-			file.isFinished = true
-			close(file.finished)
-			select {
-			case <-file.dataChan:
-			// Drain the channel to avoid blocking the sender
-			default:
-			}
-			close(file.dataChan)
-			return
-
-		case <-cHandler.timer.C:
+	go func() {
+		for {
+			<-cHandler.timer.C
 			// This timer should fire when we receive up to k chunks but we need n chunks
 			// (where k < n) to complete the file. So basically it's used to request
 			// again the chunks that we completly didn't receive are at the end of
@@ -542,7 +482,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 					continue
 				}
 
-				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
+				c.l["file"].Error("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
 				go c.scheduler.requestLeafByIndex(hf, uint32(i))
 				leavesToRequest++
 				if leavesToRequest >= 8 {
@@ -552,6 +492,75 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 			cHandler.timer.Reset(timeoutMissingChunkRequest)
 		}
+	}()
+
+	for {
+		dataChunk := <-file.dataChan
+		c.l["file"].Debug("received data packet for file", "file_hash", htos(hf))
+		c.l["file"].Debug("data info", "chunk_hash", htos(dataChunk.chunkHash), "chunk_id", dataChunk.chunkID, "packet_index", dataChunk.packetIndex)
+
+		// TODO: Does it make sense as a number?
+		if len(cHandler.chunksToWrite) < 10 {
+			cHandler.timer.Reset(timeoutMissingChunkRequest)
+		}
+
+		err := cHandler.addData(c, dataChunk)
+		if err != nil {
+			c.l["file"].Error("error adding chunk for file", "file_hash", htos(hf), "error", err)
+		}
+
+		if cHandler.totalWritten < cHandler.totalSize {
+			c.l["file"].Debug("file not complete yet", "file_hash", htos(hf), "total_written", cHandler.totalWritten, "total_size", cHandler.totalSize, "chunksToWrite", cHandler.chunksToWrite)
+			continue
+		}
+
+		mt, err := cHandler.merkleTreeForFileFromChunks()
+		if err != nil {
+			c.l["file"].Error("error creating Merkle tree for file", "file_hash", htos(hf), "error", err)
+			continue
+		}
+		if mt == nil {
+			c.l["file"].Debug("Merkle tree for file is not complete yet", "file_hash", htos(hf))
+			continue
+		}
+
+		root := mt.Root()
+		if !bytes.Equal(root, hf[:]) {
+			// c.l["file"].Debug("Merkle tree root does not match file hash", "file_hash", htos(hf), "merkle_root", htos([32]byte(root)))
+			continue
+		}
+
+		// We need to mark the tree as completed
+		c.treesMapMutex.Lock()
+		cHandler.rwChunksInfoLock.RLock()
+		totChunks := uint32(len(cHandler.chunksInfo))
+		cHandler.rwChunksInfoLock.RUnlock()
+		calculatedLeafs := merkletree.NextPowerOfTwo(totChunks)
+		h := hashFunc()
+		h.Write([]byte{0})
+		hash := h.Sum(nil)
+		for i := totChunks; i < calculatedLeafs; i++ {
+			err := c.trees[hf].mt.PutLeaf(hash, i)
+			if err != nil {
+				panic("putting leaf")
+			}
+		}
+		c.treesMapMutex.Unlock()
+
+		// If we reach here, we have received all chunks for the file and the Merkle tree is complete
+		c.l["file"].Info("file download complete", "file_hash", htos(hf))
+
+		go c.scheduler.signalFileComplete(hf)
+
+		file.isFinished = true
+		close(file.finished)
+		select {
+		case <-file.dataChan:
+		// Drain the channel to avoid blocking the sender
+		default:
+		}
+		close(file.dataChan)
+		return
 	}
 }
 
