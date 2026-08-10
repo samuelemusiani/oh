@@ -237,7 +237,7 @@ func (s *scheduler) sortLeavesRequests() {
 
 			// TODO: if leavesIndexes are not many we can probably classify this as
 			// a small request
-			s.bigRequestQueue <- request{
+			r := request{
 				t: time.Now(),
 				f: func() {
 					for _, i := range leavesIndexes {
@@ -252,12 +252,17 @@ func (s *scheduler) sortLeavesRequests() {
 							return
 						}
 
-						s.l.Debug("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
+						s.l.Warn("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
 						for _, pkt := range pkts {
 							s.s.sendDataCh <- &pkt
 						}
 					}
 				},
+			}
+			if len(leavesIndexes) > 1 {
+				s.bigRequestQueue <- r
+			} else {
+				s.smallRequestQueue <- r
 			}
 		}
 	}
