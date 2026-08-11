@@ -104,6 +104,7 @@ impl DataTree {
         let file_size = file.metadata().await?.len();
         let mut leaves = Vec::new();
         if file_size > 4096 {
+            //TODO: chunking is very slow, either consider static chunking or using a faster chunking algorithm
             let mut chunker =
                 fastcdc::v2020::AsyncStreamCDC::new(&mut file, 4096, PACKETS_PER_CHUNK * TARGET_PAYLOAD_SIZE, fastcdc::v2020::MAXIMUM_MAX);
             let mut stream = Box::pin(chunker.as_stream());

@@ -15,5 +15,3 @@ must_use_candidate = "allow"
 
 [profile.release]
 lto = "fat"
-codegen-units = 1
-strip = true

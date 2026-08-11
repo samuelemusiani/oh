@@ -1,8 +1,12 @@
-use anyhow::Result;
 use clap::{Parser, Subcommand};
-use log::info;
+use log::{debug, info};
+use server::Server;
 use std::net::IpAddr;
 use std::path::PathBuf;
+
+mod client;
+mod error;
+mod server;
 
 #[derive(Parser, Debug)]
 #[command(name = "cli")]
@@ -11,7 +15,7 @@ pub struct Args {
     pub multicast_addr: IpAddr,
 
     #[arg(short = 'i', long = "interface")]
-    pub interface: Option<String>,
+    pub interface: Option<IpAddr>,
 
     #[arg(short = 't', long = "port", default_value_t = 5000)]
     pub port: u16,
@@ -55,31 +59,19 @@ impl Args {
 }
 
 fn parse_probability(s: &str) -> Result<f64, String> {
-    let v: f64 = s
-        .parse()
-        .map_err(|_| format!("'{s}' is not a valid number"))?;
-    if (0.0..=1.0).contains(&v) {
-        Ok(v)
-    } else {
-        Err(format!("probability must be in [0.0, 1.0], got {v}"))
-    }
+    let v: f64 = s.parse().map_err(|_| format!("'{s}' is not a valid number"))?;
+    if (0.0..=1.0).contains(&v) { Ok(v) } else { Err(format!("probability must be in [0.0, 1.0], got {v}")) }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     {
-        simple_logger::SimpleLogger::new()
-            .env()
-            .init()
-            .expect("Failed to initialize logging");
+        simple_logger::SimpleLogger::new().env().init().expect("Failed to initialize logging");
     }
     #[cfg(not(debug_assertions))]
     {
-        simple_logger::SimpleLogger::new()
-            .with_level(log::LevelFilter::Info)
-            .env()
-            .init()
-            .expect("Failed to initialize logging");
+        simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).env().init().expect("Failed to initialize logging");
     }
     let args = Args::parse();
     info!("Parsed arguments: {args:?}");
@@ -89,8 +81,17 @@ fn main() -> Result<()> {
 
     match args.mode {
         Mode::Send { files } => {
-            println!("Sending {files:?}");
-            todo!();
+            info!("Sending files: {files:?}");
+            debug!("Generating data structures for files...");
+            let manifest = protocol::build_manifest_from_files(&files).await?;
+            info!("Generated manifest: {}", base16::encode_lower(&manifest.root_hash));
+            let server = Box::new(Server::new(manifest, args.multicast_addr, args.interface, args.port).await?);
+            let server = Box::leak(server);
+            info!("Server initialized, running...");
+            server.run().await?;
+            let _ = tokio::signal::ctrl_c().await;
+            info!("Shutting down server...");
+            Ok(())
         }
         Mode::Receive { download_directory } => {
             println!("Receiving into {}", download_directory.display());
