@@ -24,7 +24,12 @@
 let
   inherit (pkgs) lib;
 
-  testFile = pkgs.writeText "test.txt" "random text for testing purposes.";
+  #testFile = pkgs.writeText "test.txt" "random text for testing purposes.";
+  testFile = pkgs.runCommand "reproducible-10mb-file.bin" {
+    nativeBuildInputs = [ pkgs.openssl ];
+  } ''
+    (openssl enc -aes-256-ctr -pass pass:"fixed-seed-phrase" -nosalt </dev/zero 2>/dev/null || true) | dd bs=4k iflag=fullblock count=2560 of=$out
+  ''; # 4k x 2560
 
   # The seed determines all randomized link (topo 2 and 3)
   seed = "v1";
@@ -227,11 +232,7 @@ let
             iif = "veth1";
             oifs = map (i: "veth${toString i}") (lib.range 2 (n + 1));
           };
-          scripts = {
-            tcpdump = {
-              exec = "tcpdump -i any -w router.pcap";
-            };
-          };
+          #scripts.tcpdump.exec = "tcpdump -i any -w router.pcap";
         };
         sender = mkLeaf {
           addr = "10.0.1.2";
@@ -513,11 +514,7 @@ let
                 ]
                 ++ lib.attrNames (routerLeafIfaces "router0");
               };
-              scripts = {
-                tcpdump = {
-                  exec = "tcpdump -i any -w router0.pcap";
-                };
-              };
+              #scripts.tcpdump.exec = "tcpdump -i any -w router0.pcap";
             };
             router1 = {
               networking.interfaces = {
@@ -546,11 +543,7 @@ let
                 iif = "veth0";
                 oifs = lib.attrNames (routerLeafIfaces "router1");
               };
-              scripts = {
-                tcpdump = {
-                  exec = "tcpdump -i any -w router1.pcap";
-                };
-              };
+              #scripts.tcpdump.exec = "tcpdump -i any -w router1.pcap";
             };
             router2 = {
               networking.interfaces = {
@@ -579,11 +572,7 @@ let
                 iif = "veth0";
                 oifs = lib.attrNames (routerLeafIfaces "router2");
               };
-              scripts = {
-                tcpdump = {
-                  exec = "tcpdump -i any -w router2.pcap";
-                };
-              };
+              #scripts.tcpdump.exec = "tcpdump -i any -w router2.pcap";
             };
             sender = mkLeaf {
               addr = "10.0.1.2";
