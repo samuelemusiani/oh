@@ -13,7 +13,7 @@
     perSystem = { pkgs, inputs', lib, ... }: let
       nixnet = inputs'.nixnet.legacyPackages;
       oh-go = pkgs.callPackage ./go { };
-      #oh-rs = pkgs.callPackage ./rust { craneLib = (inputs.crane.mkLib pkgs); };
+      oh-rs = pkgs.callPackage ./rust { craneLib = (inputs.crane.mkLib pkgs); };
       #rust-sender-cmd = files: "oh-rs ${args} send ${files}";
       #rust-receiver-cmd = dir: "oh-rs ${args} recieve ${dir}";
     in {
