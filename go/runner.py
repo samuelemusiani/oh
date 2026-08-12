@@ -36,7 +36,7 @@ DEFAULT_CLIENT_DIR = "/tmp/mftp-received"
 
 # Random file generation defaults
 GEN_FILE_COUNT   = 20
-GEN_FILE_MAX_BYTES = 1024 * 1024* 64
+GEN_FILE_MAX_BYTES = 1024 * 64
 GEN_FILE_STRICY = True # generate files with exactly GEN_FILE_MAX_BYTES if True, otherwise random sizes up to that limit
 
 GEN_FILENAME_LENGTH = 4
@@ -193,7 +193,7 @@ def build_server_cmd(iface: str, addr: str = None, port: int = None,
         flags += f" -t {port}"
 
     file_args = " ".join(files)
-    return f"{BINARY} {flags} {file_args}", tmp_dir
+    return f"{BINARY} {flags} {tmp_dir}", tmp_dir
 
 def build_client_cmd(iface: str, addr: str = None, port: int = None,
                      save_dir: str = None) -> str:
