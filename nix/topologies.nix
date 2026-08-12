@@ -171,12 +171,12 @@ let
     lib.optionalAttrs (!enableTmux) {
       sender = {
         exec = senderCmd { iface = "veth0"; };
-        await = true;
       };
     };
   receiverScripts = {
     receiver = {
       exec = receiverCmd { iface = "veth0"; };
+      await = true;
     };
   };
 
