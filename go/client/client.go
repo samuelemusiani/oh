@@ -70,7 +70,7 @@ type Client struct {
 
 func New(c oh.Config) (*Client, error) {
 	go func() {
-		panic(http.ListenAndServe("localhost:6060", nil))
+		panic(http.ListenAndServe("127.0.0.1:6060", nil))
 	}()
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 

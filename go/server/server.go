@@ -51,7 +51,7 @@ var (
 
 func New(c oh.Config) (*Server, error) {
 	go func() {
-		panic(http.ListenAndServe("localhost:6060", nil))
+		panic(http.ListenAndServe("127.0.0.1:6060", nil))
 	}()
 
 	m, err := internal.OpenMulticastConnection(c.Address(), c.Port(), c.Interface())
