@@ -59,15 +59,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1781720165,
-        "narHash": "sha256-vK9f++wv0kFAhvPgSHLiwEbkw0SJQWVC73+iankJyV8=",
-        "owner": "birneee",
+        "lastModified": 1784610687,
+        "narHash": "sha256-Mg8nKW2qvNnZVHz2uNl3/bATM51AzpUG84Ux/AMdIBg=",
+        "owner": "hendrikcech",
         "repo": "nixnet",
-        "rev": "e6607fd22010f3227e526c29af5c073b9b8c8773",
+        "rev": "45e800db47ad3075f55363d75a85d5077a296948",
         "type": "github"
       },
       "original": {
-        "owner": "birneee",
+        "owner": "hendrikcech",
+        "ref": "protocol-design",
         "repo": "nixnet",
         "type": "github"
       }
