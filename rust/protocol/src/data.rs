@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use futures_util::StreamExt;
 use tokio::{fs::File, io::AsyncReadExt};
 use zerocopy::IntoBytes;
@@ -14,6 +16,8 @@ const PACKETS_PER_CHUNK: usize = 16;
 
 pub struct ManifestTree {
     pub root_hash: Hash,
+    // A set of all hashes in the tree excluding the root hash, used for quick lookup to check if the server is responsible for a given hash
+    pub hash_collection: HashSet<Hash>,
     pub metadata: Vec<Metadata>,
 }
 
@@ -28,7 +32,9 @@ impl ManifestTree {
                 Metadata::Stream => todo!(),
             })
             .collect();
+        let mut hash_collection: HashSet<Hash> = HashSet::new();
         while intermediate_hashes.len() > 1 {
+            hash_collection.extend(intermediate_hashes.iter().cloned());
             let mut next_level_hashes = Vec::new();
             for i in (0..intermediate_hashes.len()).step_by(2) {
                 if i + 1 < intermediate_hashes.len() {
@@ -46,7 +52,16 @@ impl ManifestTree {
             level += 1;
         }
         let root_hash = intermediate_hashes[0];
-        Ok(Self { root_hash, metadata })
+        Ok(Self { root_hash, metadata, hash_collection })
+    }
+    pub fn contains_hash(&self, hash: &Hash) -> bool {
+        self.hash_collection.contains(hash)
+            || self.root_hash == *hash
+            || self.metadata.iter().any(|metadata| match metadata {
+                Metadata::File(file_metadata) => file_metadata.data_tree.hash_collection.contains(hash),
+                Metadata::Directory => false,
+                Metadata::Stream => false,
+            })
     }
 }
 
@@ -86,6 +101,8 @@ impl FileMetadata {
 #[derive(Debug)]
 pub struct DataTree {
     pub root_hash: Hash,
+    // A set of all hashes in the tree excluding the root hash, used for quick lookup to check if the server is responsible for a given hash
+    pub hash_collection: HashSet<Hash>,
     pub leaves: Vec<DataLeaf>,
     pub file: File,
     pub height: u8,
@@ -122,8 +139,10 @@ impl DataTree {
             leaves.push(leaf);
         }
         let mut intermediate_hashes: Vec<Hash> = leaves.iter().map(|leaf| leaf.hash).collect();
+        let mut hash_collection: HashSet<Hash> = HashSet::new();
         let mut level: u8 = 0;
         while intermediate_hashes.len() > 1 {
+            hash_collection.extend(intermediate_hashes.iter().cloned());
             level = level.checked_add(1).unwrap();
             let mut next_level_hashes = Vec::new();
             for i in (0..intermediate_hashes.len()).step_by(2) {
@@ -141,6 +160,6 @@ impl DataTree {
             intermediate_hashes = next_level_hashes;
         }
         let root_hash = intermediate_hashes[0];
-        Ok(Self { root_hash, leaves, file, height: level })
+        Ok(Self { root_hash, leaves, file, height: level, hash_collection })
     }
 }

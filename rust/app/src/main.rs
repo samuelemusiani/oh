@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
 use log::{debug, info};
-use server::Server;
 use std::net::IpAddr;
 use std::path::PathBuf;
+
+use crate::client::Client;
+use crate::server::Server;
 
 mod client;
 mod error;
@@ -95,7 +97,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Mode::Receive { download_directory } => {
             println!("Receiving into {}", download_directory.display());
-            todo!();
+            let client = Box::new(Client::new(args.multicast_addr, args.interface, args.port, download_directory).await?);
+            let client = Box::leak(client);
+            info!("Client initialized, running...");
+            client.run().await?;
+            let _ = tokio::signal::ctrl_c().await;
+            info!("Shutting down client...");
+            Ok(())
         }
     }
 }

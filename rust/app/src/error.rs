@@ -8,4 +8,6 @@ pub enum AppError {
     ChannelSend(#[from] tokio::sync::mpsc::error::SendError<protocol::packet::Packet<'static>>),
     #[error("Channel receive error: {0}")]
     ChannelReceive(#[from] tokio::sync::mpsc::error::RecvError),
+    #[error("Invalid argument: {0}")]
+    InvalidArgument(String),
 }
