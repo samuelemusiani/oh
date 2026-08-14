@@ -1,4 +1,4 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use log::{debug, error, info, trace};
 use protocol::packet::Packet;
@@ -10,7 +10,10 @@ use tokio::{
     },
 };
 
-use crate::{error::AppError, server::cc::CongestionControl};
+use crate::{
+    error::AppError,
+    server::cc::{self, CongestionControl},
+};
 
 pub struct Server {
     socket: UdpSocket,
@@ -59,6 +62,7 @@ impl Server {
     pub async fn run(&'static self) -> Result<(), AppError> {
         tokio::task::spawn(async move { self.sender().await.unwrap() });
         tokio::task::spawn(async move { self.advertise().await.unwrap() });
+        tokio::task::spawn(async move { self.congestion_control().await.unwrap() });
         self.receiver().await
     }
 
@@ -107,11 +111,25 @@ impl Server {
                 // Only client needs to handle this
                 debug!("Ignoring merkle tree packet from {} with root hash {}", addr, base16::encode_lower(&merkle_tree_packet.root_hash));
             }
-            Packet::FeedbackRequest(feedback_request_packet) => {
+            Packet::FeedbackRequest(_) => {
                 // Only client needs to handle this
                 debug!("Ignoring feedback request packet from {}", addr);
             }
-            Packet::Feedback(_) => {}
+            Packet::Feedback(feedback_packet) => {
+                if IpAddr::from(*feedback_packet.server_ip) != self.socket.local_addr()?.ip() {
+                    debug!("Ignoring feedback packet from {} because it is not for us", addr);
+                    return Ok(());
+                }
+                debug!("Handling feedback packet from {} with request id {}", addr, feedback_packet.request_id);
+                self.congestion_control
+                    .handle_feedback(
+                        *feedback_packet.number_of_packets_received,
+                        *feedback_packet.packet_index,
+                        *feedback_packet.request_id,
+                        addr.ip(),
+                    )
+                    .await;
+            }
         }
         Ok(())
     }
@@ -123,6 +141,9 @@ impl Server {
             let bytes = protocol::encode_packet(packet)?;
             trace!("Encoded packet to bytes: {:?}", bytes);
             self.socket.send_to(&bytes, (self.multicast_addr, self.multicast_port)).await?;
+            self.congestion_control.add_packet();
+            // Sleep for a duration based on the current rate from congestion control to avoid sending too many packets too quickly
+            tokio::time::sleep(std::time::Duration::from_millis((1500 / self.congestion_control.get_rate().await) as u64)).await;
             debug!("Sent a packet")
         }
         Ok(())
@@ -132,13 +153,25 @@ impl Server {
         loop {
             let advertisement_packet =
                 protocol::packet::Packet::Advertisement(protocol::packet::AdvertisementPacket { hash: &self.manifest.root_hash });
-            self.packet_queue_sender.send(advertisement_packet).await?;
+            // Directly send here, these packets are not subject to congestion control
+            self.socket.send_to(&protocol::encode_packet(advertisement_packet)?, (self.multicast_addr, self.multicast_port)).await?;
             debug!("Sent advertisement packet with root hash: {}", base16::encode_lower(&self.manifest.root_hash));
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     }
 
     async fn congestion_control(&'static self) -> Result<(), AppError> {
-        todo!()
+        loop {
+            let feedback_request = protocol::packet::Packet::FeedbackRequest(protocol::packet::FeedbackRequestPacket {
+                request_id: &self.congestion_control.get_feedback_id(),
+                timespan: &cc::FEEDBACK_TIMESPAN,
+                number_of_feedbacks: &cc::FEEDBACK_COUNT,
+            });
+            // Directly send here, these packets are not subject to congestion control
+            self.socket.send_to(&protocol::encode_packet(feedback_request)?, (self.multicast_addr, self.multicast_port)).await?;
+            debug!("Sent feedback request packet with request id: {}", self.congestion_control.get_feedback_id());
+            tokio::time::sleep(std::time::Duration::from_millis((cc::FEEDBACK_TIMESPAN + cc::FEEDBACK_TIMESPAN / 2) as u64)).await;
+            self.congestion_control.adjust_rate().await;
+        }
     }
 }
