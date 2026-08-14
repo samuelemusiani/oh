@@ -152,10 +152,10 @@ impl Server {
     async fn advertise(&'static self) -> Result<(), AppError> {
         loop {
             let advertisement_packet =
-                protocol::packet::Packet::Advertisement(protocol::packet::AdvertisementPacket { hash: &self.manifest.root_hash });
+                protocol::packet::Packet::Advertisement(protocol::packet::AdvertisementPacket { hash: &self.manifest.root_hash() });
             // Directly send here, these packets are not subject to congestion control
             self.socket.send_to(&protocol::encode_packet(advertisement_packet)?, (self.multicast_addr, self.multicast_port)).await?;
-            debug!("Sent advertisement packet with root hash: {}", base16::encode_lower(&self.manifest.root_hash));
+            debug!("Sent advertisement packet with root hash: {}", base16::encode_lower(&self.manifest.root_hash()));
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     }

@@ -57,7 +57,7 @@ pub async fn build_manifest_from_files(files: &[PathBuf]) -> Result<data::Manife
         let file_metadata = data::FileMetadata::new(file_name, file).await?;
         metadata.push(Metadata::File(file_metadata));
     }
-    let manifest_tree = data::ManifestTree::new(metadata).await?;
+    let manifest_tree = data::ManifestTree::new(metadata, ()).await?;
     Ok(manifest_tree)
 }
 
@@ -285,29 +285,34 @@ pub fn encode_packet(packet: Packet) -> Result<Vec<u8>, OHProtocolError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::data::FileMetadata;
+
     use super::*;
 
     #[tokio::test]
     async fn test_build_data_tree() {
         let file = File::open("test_data/100MB.bin").await.unwrap();
-        let data_tree = data::DataTree::new(file).await.unwrap();
-        println!("Root hash: {:?}", data_tree.root_hash);
-        println!("Number of leaves: {}", data_tree.leaves.len());
-        assert_eq!(data_tree.leaves.len(), 4619);
+        let metadata = FileMetadata::new("100MB.bin".to_string(), file).await.unwrap();
+        let data_tree = metadata.data_tree;
+        println!("Root hash: {:?}", data_tree.root_hash());
+        println!("Number of leaves: {}", data_tree.len());
+        assert_eq!(data_tree.len(), 4619);
     }
 
     #[tokio::test]
     async fn test_build_manifest_tree() {
         let mut dir = tokio::fs::read_dir("test_data").await.unwrap();
         let manifest_tree = build_manifest_from_dir(&mut dir).await.unwrap();
-        println!("Root hash: {:?}", manifest_tree.root_hash);
-        println!("Number of files: {}", manifest_tree.metadata.len());
-        for metadata in &manifest_tree.metadata {
+        println!("Root hash: {:?}", manifest_tree.root_hash());
+        println!("Number of files: {}", manifest_tree.len());
+        for metadata in &manifest_tree {
             match metadata {
                 Metadata::File(file_metadata) => {
                     println!(
                         "File: {}, Metadata Hash: {:?}, Data Hash: {:?}",
-                        file_metadata.name, file_metadata.hash, file_metadata.data_tree.root_hash
+                        file_metadata.name,
+                        file_metadata.hash,
+                        file_metadata.data_tree.root_hash()
                     );
                 }
                 Metadata::Directory => {
@@ -318,6 +323,6 @@ mod tests {
                 }
             }
         }
-        assert_eq!(manifest_tree.metadata.len(), 4);
+        assert_eq!(manifest_tree.len(), 4);
     }
 }
