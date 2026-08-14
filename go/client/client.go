@@ -380,6 +380,9 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 
 		c.handleFeedbackRequest(pkt, msg.Src)
 
+	case packet.MessageTypeRequestLeaves, packet.MessageTypeRequestLeaf, packet.MessageTypeFeedback:
+	// Do nothing
+
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
