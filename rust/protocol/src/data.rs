@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use futures_util::StreamExt;
 use memmap2::Mmap;
+use sha2::{Digest, Sha256};
 use tokio::{fs::File, io::AsyncReadExt};
 use zerocopy::IntoBytes;
 
@@ -52,6 +53,22 @@ impl MerkleNode {
             hashes
         }
     }
+    pub fn get_node_with_hash(self: &Box<MerkleNode>, hash: &Hash) -> Option<&Box<MerkleNode>> {
+        if &self.hash == hash {
+            return Some(self);
+        }
+        if let Some(left) = &self.left {
+            if let Some(node) = left.get_node_with_hash(hash) {
+                return Some(node);
+            }
+        }
+        if let Some(right) = &self.right {
+            if let Some(node) = right.get_node_with_hash(hash) {
+                return Some(node);
+            }
+        }
+        None
+    }
 }
 
 impl PartialEq for MerkleNode {
@@ -72,13 +89,14 @@ where
 
 impl<T: MerkleHash, E> MerkleTree<T, E> {
     pub async fn new(leaves: Vec<T>, extra_data: E) -> Result<Self, OHProtocolError> {
+        //TODO: Clarify which data type the level is supposed to be, the hash changes depending on the type/size of level.
         let mut level = 1;
-        let empty_hash = sha256::digest(0u8.as_bytes());
+        let empty_hash = Sha256::digest(0u8.as_bytes());
         let mut intermediate_hashes: Vec<Box<MerkleNode>> =
             leaves.iter().map(|leaf| Box::new(MerkleNode { hash: leaf.merkle_hash(), left: None, right: None })).collect();
         let padding_needed = Self::next_power_of_two(intermediate_hashes.len()) - intermediate_hashes.len();
         for _ in 0..padding_needed {
-            let empty_node = Box::new(MerkleNode { hash: empty_hash.clone().try_from()?, left: None, right: None });
+            let empty_node = Box::new(MerkleNode { hash: empty_hash.clone().try_into().unwrap(), left: None, right: None });
             intermediate_hashes.push(empty_node);
         }
         assert!(intermediate_hashes.len() % 2 == 0, "Merkle tree construction failed: number of leaves is not a power of two after padding");
@@ -91,8 +109,13 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
                     let left_node = intermediate_hashes.remove(0);
                     let right_node = intermediate_hashes.remove(0);
                     let combined_hash = [level.as_bytes(), &left_node.hash, &right_node.hash].concat();
-                    let parent_hash = sha256::digest(&combined_hash);
-                    next_level_hashes.push(Box::new(MerkleNode { hash: parent_hash.try_from()?, left: Some(left_node), right: Some(right_node) }));
+                    let parent_hash = Sha256::digest(&combined_hash);
+                    println!("Level {}: left hash: {}, right hash: {}, parent hash: {}", level, base16::encode_lower(&left_node.hash), base16::encode_lower(&right_node.hash), base16::encode_lower(&parent_hash));
+                    next_level_hashes.push(Box::new(MerkleNode {
+                        hash: parent_hash.try_into().unwrap(),
+                        left: Some(left_node),
+                        right: Some(right_node),
+                    }));
                 } else {
                     panic!("Merkle tree construction failed: odd number of nodes at level {}", level);
                 }
@@ -131,7 +154,23 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
         if !self.contains_hash(hash) {
             return None;
         }
-        todo!()
+        self.tree_node.get_node_with_hash(hash)
+    }
+    pub fn nodes_at_depth(&self, depth: u8) -> Vec<&Box<MerkleNode>> {
+        let mut nodes = vec![&self.tree_node];
+        for _ in 0..depth {
+            let mut next_level_nodes = Vec::new();
+            for node in nodes {
+                if let Some(left) = &node.left {
+                    next_level_nodes.push(left);
+                }
+                if let Some(right) = &node.right {
+                    next_level_nodes.push(right);
+                }
+            }
+            nodes = next_level_nodes;
+        }
+        nodes
     }
     fn next_power_of_two(n: usize) -> usize {
         let mut n = n;
@@ -193,15 +232,17 @@ impl FileMetadata {
             let mut stream = Box::pin(chunker.as_stream());
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.expect("Failed to read chunk");
-                let chunk_hash = sha256::digest([0.as_bytes(), &chunk.data].concat());
-                let leaf = DataLeaf { hash: chunk_hash.try_from()?, offset: chunk.offset, length: chunk.data.len() as u64 };
+                //TODO: Clrify which data type the level is supposed to be, the hash changes depending on the type/size of level.
+                let chunk_hash = Sha256::digest([0.as_bytes(), &chunk.data].concat());
+                let leaf = DataLeaf { hash: chunk_hash.try_into().unwrap(), offset: chunk.offset, length: chunk.data.len() as u64 };
                 leaves.push(leaf);
             }
         } else {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
-            let leaf_hash = sha256::digest([0.as_bytes(), &data].concat());
-            let leaf = DataLeaf { hash: leaf_hash.try_from()?, offset: 0, length: data.len() as u64 };
+            //TODO: Clarify which data type the level is supposed to be, the hash changes depending on the type/size of level.
+            let leaf_hash = Sha256::digest([0.as_bytes(), &data].concat());
+            let leaf = DataLeaf { hash: leaf_hash.try_into().unwrap(), offset: 0, length: data.len() as u64 };
             leaves.push(leaf);
         }
         let mmap = unsafe { Mmap::map(&file)? };
@@ -220,7 +261,8 @@ impl FileMetadata {
             },
         };
         let encoded_packet = encode_packet(Packet::Metadata(metadata_packet))?;
-        Ok(Self { name: filename, data_tree, hash: sha256::digest([0.as_bytes(), &encoded_packet].concat()).try_from()? })
+        //TODO: Clarify which data type the level is supposed to be, the hash changes depending on the type/size of level.
+        Ok(Self { name: filename, data_tree, hash: Sha256::digest([0.as_bytes(), &encoded_packet].concat()).try_into().unwrap() })
     }
 }
 
@@ -236,5 +278,82 @@ pub struct DataLeaf {
 impl MerkleHash for DataLeaf {
     fn merkle_hash(&self) -> Hash {
         self.hash
+    }
+}
+#[cfg(test)]
+
+mod tests {
+    use sha2::{Digest, Sha256};
+    use zerocopy::IntoBytes;
+
+    use crate::Hash;
+    use crate::data::MerkleHash;
+
+    struct TestLeaf {
+        hash: Hash,
+    }
+    impl TestLeaf {
+        fn new() -> Self {
+            let hash = Sha256::digest(b"test");
+            TestLeaf { hash: hash.try_into().unwrap() }
+        }
+        fn new_with_number(num: u8) -> Self {
+            let hash = Sha256::digest(&[num]);
+            TestLeaf { hash: hash.try_into().unwrap() }
+        }
+    }
+
+    impl MerkleHash for TestLeaf {
+        fn merkle_hash(&self) -> Hash {
+            self.hash
+        }
+    }
+
+    #[tokio::test]
+    async fn test_merkle_tree_nodes_at_depth() {
+        let leaves = vec![TestLeaf::new_with_number(1), TestLeaf::new_with_number(2), TestLeaf::new_with_number(3), TestLeaf::new_with_number(4)];
+        let tree = crate::data::MerkleTree::new(leaves, ()).await.unwrap();
+        let depth_0_nodes = tree.nodes_at_depth(0);
+        assert_eq!(depth_0_nodes.len(), 1);
+        assert_eq!(depth_0_nodes[0].hash(), tree.root_hash());
+        let depth_2_nodes = tree.nodes_at_depth(2);
+        assert_eq!(depth_2_nodes.len(), 4);
+        let expected_hashes = vec![
+            TestLeaf::new_with_number(1).merkle_hash(),
+            TestLeaf::new_with_number(2).merkle_hash(),
+            TestLeaf::new_with_number(3).merkle_hash(),
+            TestLeaf::new_with_number(4).merkle_hash(),
+        ];
+        for (node, expected_hash) in depth_2_nodes.iter().zip(expected_hashes.iter()) {
+            assert_eq!(node.hash(), expected_hash);
+        }
+
+        let depth_3_nodes = tree.nodes_at_depth(3);
+        assert_eq!(depth_3_nodes.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_merkle_tree_sub_tree() {
+        let leaves = vec![TestLeaf::new_with_number(1), TestLeaf::new_with_number(2), TestLeaf::new_with_number(3), TestLeaf::new_with_number(4)];
+        let tree = crate::data::MerkleTree::new(leaves, ()).await.unwrap();
+        let leaf_hash = TestLeaf::new_with_number(2).merkle_hash();
+        let sub_tree = tree.sub_tree(&leaf_hash);
+        assert!(sub_tree.is_some());
+        let sub_tree_node = sub_tree.unwrap();
+        assert_eq!(sub_tree_node.hash(), &leaf_hash);
+        let intermediate_hash =
+            Sha256::digest([1u32.as_bytes(), &TestLeaf::new_with_number(1).merkle_hash(), &TestLeaf::new_with_number(2).merkle_hash()].concat());
+        println!("Intermediate hash: {}", base16::encode_lower(&intermediate_hash));
+        let intermediate_hash: Hash = intermediate_hash.try_into().unwrap();
+        let sub_tree = tree.sub_tree(&intermediate_hash);
+        assert!(sub_tree.is_some());
+        let sub_tree_node = sub_tree.unwrap();
+        assert_eq!(sub_tree_node.hash(), &intermediate_hash);
+        assert!(sub_tree_node.left().is_some());
+        assert!(sub_tree_node.right().is_some());
+        let non_existent_hash = Sha256::digest(b"nonexistent");
+        let non_existent_hash: Hash = non_existent_hash.try_into().unwrap();
+        let sub_tree = tree.sub_tree(&non_existent_hash);
+        assert!(sub_tree.is_none());
     }
 }
