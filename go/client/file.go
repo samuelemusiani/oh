@@ -530,6 +530,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			continue
 		}
 
+		cHandler.timer.Stop()
+
 		// We need to mark the tree as completed
 		c.treesMapMutex.Lock()
 		cHandler.rwChunksInfoLock.RLock()
