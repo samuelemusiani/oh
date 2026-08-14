@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use log::{debug, error, info, trace};
 use protocol::packet::Packet;
@@ -62,20 +63,24 @@ impl Server {
         })
     }
 
-    pub async fn run(&'static self) -> Result<(), AppError> {
-        tokio::task::spawn(async move { self.sender().await.unwrap() });
-        tokio::task::spawn(async move { self.advertise().await.unwrap() });
-        tokio::task::spawn(async move { self.congestion_control().await.unwrap() });
+    pub async fn run(self: Arc<Self>) -> Result<(), AppError> {
+        let client = self.clone();
+        tokio::task::spawn(async move { client.sender().await.unwrap() });
+        let client = self.clone();
+        tokio::task::spawn(async move { client.advertise().await.unwrap() });
+        let client = self.clone();
+        tokio::task::spawn(async move { client.congestion_control().await.unwrap() });
         self.receiver().await
     }
 
-    async fn receiver(&'static self) -> Result<(), AppError> {
+    async fn receiver(self: Arc<Self>) -> Result<(), AppError> {
         loop {
             let mut buf = vec![0u8; 65536];
             let (len, addr) = self.socket.recv_from(&mut buf).await?;
             trace!("Received {} bytes from {}", len, addr);
+            let client = self.clone();
             tokio::task::spawn(async move {
-                match self.handle_packet(buf, addr, len).await {
+                match client.handle_packet(buf, addr, len).await {
                     Ok(_) => debug!("Handled packet from {}", addr),
                     Err(e) => error!("Error handling packet from {}: {}", addr, e),
                 }
@@ -83,7 +88,7 @@ impl Server {
         }
     }
 
-    async fn handle_packet(&'static self, buf: Vec<u8>, addr: SocketAddr, len: usize) -> Result<(), AppError> {
+    async fn handle_packet(&self, buf: Vec<u8>, addr: SocketAddr, len: usize) -> Result<(), AppError> {
         let packet = protocol::parse_packet(&buf[..len])?;
         match packet {
             Packet::Advertisement(advertisement_packet) => {
@@ -140,7 +145,7 @@ impl Server {
         Ok(())
     }
 
-    async fn sender(&'static self) -> Result<(), AppError> {
+    async fn sender(&self) -> Result<(), AppError> {
         let mut packet_queue = self.packet_queue.lock().await;
         while let Some(packet) = packet_queue.recv().await {
             trace!("Sending packet: {:?}", packet);
@@ -155,7 +160,7 @@ impl Server {
         Ok(())
     }
 
-    async fn advertise(&'static self) -> Result<(), AppError> {
+    async fn advertise(&self) -> Result<(), AppError> {
         loop {
             let advertisement_packet =
                 protocol::packet::Packet::Advertisement(protocol::packet::AdvertisementPacket { hash: &self.manifest.root_hash() });
@@ -166,7 +171,7 @@ impl Server {
         }
     }
 
-    async fn congestion_control(&'static self) -> Result<(), AppError> {
+    async fn congestion_control(&self) -> Result<(), AppError> {
         loop {
             let feedback_request = protocol::packet::Packet::FeedbackRequest(protocol::packet::FeedbackRequestPacket {
                 request_id: &self.congestion_control.get_feedback_id(),

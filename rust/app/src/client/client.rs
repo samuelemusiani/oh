@@ -1,6 +1,7 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
 };
 
 use log::{debug, error, trace};
@@ -45,24 +46,25 @@ impl Client {
         Ok(Client { socket, multicast_addr, multicast_port: port, output_directory })
     }
 
-    pub async fn run(&'static self) -> Result<(), AppError> {
+    pub async fn run(self: Arc<Self>) -> Result<(), AppError> {
         self.receiver().await
     }
 
-    async fn receiver(&'static self) -> Result<(), AppError> {
+    async fn receiver(self: Arc<Self>) -> Result<(), AppError> {
         loop {
             let mut buf = vec![0u8; 65536];
             let (len, addr) = self.socket.recv_from(&mut buf).await?;
             trace!("Received {} bytes from {}", len, addr);
+            let client = self.clone();
             tokio::task::spawn(async move {
-                match self.handle_packet(buf, addr, len).await {
+                match client.handle_packet(buf, addr, len).await {
                     Ok(_) => debug!("Handled packet from {}", addr),
                     Err(e) => error!("Error handling packet from {}: {}", addr, e),
                 }
             });
         }
     }
-    async fn handle_packet(&'static self, buf: Vec<u8>, addr: SocketAddr, len: usize) -> Result<(), AppError> {
+    async fn handle_packet(self: Arc<Self>, buf: Vec<u8>, addr: SocketAddr, len: usize) -> Result<(), AppError> {
         let packet = protocol::parse_packet(&buf[..len])?;
         match packet {
             protocol::packet::Packet::Advertisement(advertisement_packet) => todo!(),

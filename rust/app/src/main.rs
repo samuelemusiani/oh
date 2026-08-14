@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use log::{debug, info};
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::client::Client;
 use crate::server::Server;
@@ -87,8 +88,7 @@ async fn main() -> anyhow::Result<()> {
             debug!("Generating data structures for files...");
             let manifest = protocol::build_manifest_from_files(&files).await?;
             info!("Generated manifest: {}", base16::encode_lower(&manifest.root_hash()));
-            let server = Box::new(Server::new(manifest, args.multicast_addr, args.interface, args.port).await?);
-            let server = Box::leak(server);
+            let server = Arc::new(Server::new(manifest, args.multicast_addr, args.interface, args.port).await?);
             info!("Server initialized, running...");
             server.run().await?;
             let _ = tokio::signal::ctrl_c().await;
@@ -97,8 +97,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Mode::Receive { download_directory } => {
             println!("Receiving into {}", download_directory.display());
-            let client = Box::new(Client::new(args.multicast_addr, args.interface, args.port, download_directory).await?);
-            let client = Box::leak(client);
+            let client = Arc::new(Client::new(args.multicast_addr, args.interface, args.port, download_directory).await?);
             info!("Client initialized, running...");
             client.run().await?;
             let _ = tokio::signal::ctrl_c().await;
