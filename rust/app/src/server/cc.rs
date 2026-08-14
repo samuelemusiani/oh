@@ -58,6 +58,10 @@ impl CongestionControl {
 
     pub async fn adjust_rate(&self) {
         let mut loss_rates: tokio::sync::MutexGuard<'_, Vec<f64>> = self.loss_rates.lock().await;
+        if loss_rates.is_empty() {
+            debug!("No feedback received, not adjusting rate");
+            return;
+        }
         loss_rates.sort_by(|a, b| self.cmp_f64(a, b));
         let percentile_index = loss_rates.len() as f64 * LOSS_RATE_PERCENTILE as f64 / 100.0;
         let loss_rate: f64;
