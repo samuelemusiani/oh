@@ -252,7 +252,7 @@ func (s *scheduler) sortLeavesRequests() {
 							return
 						}
 
-						s.l.Warn("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
+						s.l.Debug("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
 						for _, pkt := range pkts {
 							s.s.sendDataCh <- &pkt
 						}

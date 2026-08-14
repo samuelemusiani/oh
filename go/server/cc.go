@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"slices"
 	"time"
 
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
@@ -61,20 +62,26 @@ func (s *Server) adjustRate(id uint16) {
 		allLosses = append(allLosses, avgLoss)
 	}
 
-	// TODO: calculate percentile on allLosses ?
-	if len(allLosses) > 0 {
-		fmt.Println("allLosses[0]", allLosses[0])
-		if allLosses[0] < 0.01 && s.limitedByRate.Load() {
-			factor := 1 + 0.01*math.Pow(float64(time.Since(s.lastLoss))/1e9, 1.5)
-			fmt.Println("factor", factor)
-			s.sendingLimit.Store(int64(float64(s.sendingLimit.Load()) * factor))
-			fmt.Println("INCREASING RATE", s.sendingLimit.Load())
-		} else if allLosses[0] > 0.3 {
+	if len(allLosses) == 0 {
+		if s.latestID != 0 {
 			s.sendingLimit.Store(s.sendingLimit.Load() / 2)
 			fmt.Println("DECREASING RATE", s.sendingLimit.Load())
 			s.lastLoss = time.Now()
 		}
-	} else if s.latestID != 0 {
+		return
+	}
+
+	slices.Sort(allLosses)
+	p := 90
+	index := min(int(math.Floor(float64(len(allLosses))*float64(p)/100)), len(allLosses))
+
+	fmt.Println("index", index, "allLosses[index]", allLosses[index])
+	if allLosses[index] < 0.01 && s.limitedByRate.Load() {
+		factor := 1 + 0.01*math.Pow(float64(time.Since(s.lastLoss))/1e9, 1.5)
+		fmt.Println("factor", factor)
+		s.sendingLimit.Store(int64(float64(s.sendingLimit.Load()) * factor))
+		fmt.Println("INCREASING RATE", s.sendingLimit.Load())
+	} else if allLosses[index] > 0.3 {
 		s.sendingLimit.Store(s.sendingLimit.Load() / 2)
 		fmt.Println("DECREASING RATE", s.sendingLimit.Load())
 		s.lastLoss = time.Now()
