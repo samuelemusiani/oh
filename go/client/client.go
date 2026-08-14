@@ -3,8 +3,6 @@ package client
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -258,34 +256,34 @@ func (c *Client) run() error {
 
 			c.l["global"].Info("All files received, exiting")
 
-			totalBytesForFiles := uint64(0)
-			c.filesMapMutex.Lock()
-			for _, f := range c.filesMap {
-				fData := fileDataFromMetadata(f.metadata)
-				totalBytesForFiles += binary.NativeEndian.Uint64(fData.Size)
-				totalBytesForFiles += uint64(len(fData.Name))
-			}
-
-			c.filesMapMutex.Unlock()
-			ov := struct {
-				BytesReceived      uint64  `json:"bytes_received"`
-				BytesSent          uint64  `json:"bytes_sent"`
-				TotalBytesForFiles uint64  `json:"total_bytes_for_files"`
-				Overhead           float64 `json:"overhead"`
-			}{
-				BytesReceived:      bytesReceived,
-				BytesSent:          bytesSent,
-				TotalBytesForFiles: totalBytesForFiles,
-				Overhead:           float64(bytesReceived+bytesSent-totalBytesForFiles) / float64(totalBytesForFiles) * 100,
-			}
-
-			m, err := json.MarshalIndent(ov, "", "\t")
-			if err != nil {
-				panic("could not marshal struct")
-			}
-			fmt.Println("------------ OVERHEAD START ------------")
-			fmt.Println(string(m))
-			fmt.Println("------------ OVERHEAD END ------------")
+			// totalBytesForFiles := uint64(0)
+			// c.filesMapMutex.Lock()
+			// for _, f := range c.filesMap {
+			// 	fData := fileDataFromMetadata(f.metadata)
+			// 	totalBytesForFiles += binary.NativeEndian.Uint64(fData.Size)
+			// 	totalBytesForFiles += uint64(len(fData.Name))
+			// }
+			//
+			// c.filesMapMutex.Unlock()
+			// ov := struct {
+			// 	BytesReceived      uint64  `json:"bytes_received"`
+			// 	BytesSent          uint64  `json:"bytes_sent"`
+			// 	TotalBytesForFiles uint64  `json:"total_bytes_for_files"`
+			// 	Overhead           float64 `json:"overhead"`
+			// }{
+			// 	BytesReceived:      bytesReceived,
+			// 	BytesSent:          bytesSent,
+			// 	TotalBytesForFiles: totalBytesForFiles,
+			// 	Overhead:           float64(bytesReceived+bytesSent-totalBytesForFiles) / float64(totalBytesForFiles) * 100,
+			// }
+			//
+			// m, err := json.MarshalIndent(ov, "", "\t")
+			// if err != nil {
+			// 	panic("could not marshal struct")
+			// }
+			// fmt.Println("------------ OVERHEAD START ------------")
+			// fmt.Println(string(m))
+			// fmt.Println("------------ OVERHEAD END ------------")
 
 			return nil
 		}

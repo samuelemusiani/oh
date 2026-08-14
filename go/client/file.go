@@ -434,7 +434,6 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			chInfo.reRequest.Reset(chInfo.lastTimeout) // TODO: maybe an exponential backoff would be better
 			// We can request the chunk again, by hash :)
 
-			fmt.Println("requesting chunk", chunkID)
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
