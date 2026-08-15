@@ -17,24 +17,8 @@ pub mod error;
 pub mod packet;
 mod zc;
 
-trait TryFromBase16: Sized {
-    type Error;
-
-    fn try_from(self) -> Result<Hash, Self::Error>;
-}
-
 // Type alias for a 256-bit hash
 pub type Hash = [u8; 32];
-
-impl TryFromBase16 for String {
-    type Error = OHProtocolError;
-
-    fn try_from(self) -> Result<Hash, Self::Error> {
-        let bytes = base16::decode(&self)?;
-        let hash: Hash = bytes.as_bytes().try_into().map_err(|_| OHProtocolError::InvalidSize { expected: 32, actual: bytes.len() })?;
-        Ok(hash)
-    }
-}
 
 pub async fn build_manifest_from_dir(dir: &mut ReadDir) -> Result<data::ManifestTree, OHProtocolError> {
     let mut files: Vec<PathBuf> = Vec::new();

@@ -7,7 +7,7 @@ use tokio::{fs::File, io::AsyncReadExt};
 use zerocopy::IntoBytes;
 
 use crate::{
-    Hash, TryFromBase16, encode_packet,
+    Hash, encode_packet,
     error::OHProtocolError,
     packet::{MetadataPacket, Packet},
 };

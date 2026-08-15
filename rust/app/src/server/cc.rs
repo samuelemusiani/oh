@@ -39,7 +39,7 @@ impl CongestionControl {
     pub fn add_packet(&self) {
         self.packet_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
-    pub async fn handle_feedback(&self, received_packets: u16, packet_index: u16, request_id: u16, src: IpAddr) {
+    pub async fn handle_feedback(&self, received_packets: u16, _: u16, request_id: u16, src: IpAddr) {
         let current_feedback_id = self.feedback_id.load(std::sync::atomic::Ordering::SeqCst);
         if request_id != current_feedback_id {
             debug!(

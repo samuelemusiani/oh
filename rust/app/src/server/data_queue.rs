@@ -73,7 +73,17 @@ impl DataQueue {
 
         match &processed_request.request {
             QueueableRequest::LeavesRequest { hash } => {
-                
+                if manifest.contains_hash(hash){
+
+                }else{
+                    for leaf in manifest {
+                        match leaf{
+                            protocol::data::Metadata::File(file_metadata) => todo!(),
+                            protocol::data::Metadata::Directory => todo!(),
+                            protocol::data::Metadata::Stream => todo!(),
+                        }
+                    }
+                }
             }
             QueueableRequest::LeafRequest { hash, index } => {
                 
