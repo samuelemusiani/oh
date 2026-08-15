@@ -271,7 +271,7 @@ func (s *scheduler) sortLeavesRequests() {
 func (s *scheduler) handleLeafRequests() {
 	for {
 		r := <-s.leafQueue
-		s.l.Warn("Received leaf request packet", "hash", htos(r.r.RootHash), "index", r.r.Index)
+		s.l.Debug("Received leaf request packet", "hash", htos(r.r.RootHash), "index", r.r.Index)
 
 		mt, ok := s.s.hashLookup[r.r.RootHash]
 		if !ok {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -166,7 +167,26 @@ func (s *Server) sendLoop() {
 	lastReset := time.Now()
 	// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
 
-	batchSize := 1
+	// ------------- GRAPH -------------------
+	graphChan := make(chan uint64, 1024*1024)
+	go func() {
+		path := "s_graph_" + strconv.FormatUint(uint64(time.Now().UnixMilli()), 10)
+		f, err := os.Create(path)
+		if err != nil {
+			panic(fmt.Sprintf("could not open file %s: %s", path, err.Error()))
+		}
+
+		for {
+			value := <-graphChan
+			_, err := f.Write(fmt.Appendf(nil, "%d %d %d\n", time.Now().UnixNano(), value, s.sendingLimit.Load()))
+			if err != nil {
+				panic(fmt.Sprintf("could not write to file %s: %s", path, err.Error()))
+			}
+		}
+	}()
+	// ------------- GRAPH -------------------
+
+	batchSize := 16
 	batch := make([][]byte, 0, batchSize)
 
 	sendBatch := func() {
@@ -179,6 +199,7 @@ func (s *Server) sendLoop() {
 
 		for i := range batch {
 			printBytesSent.Add(uint64(len(batch[i])))
+			graphChan <- uint64(len(batch[i]))
 		}
 
 		// for i := range batch {

@@ -68,7 +68,7 @@ func (e *FECEncoder) Run(recv <-chan packet.Message, send chan<- Packet) error {
 			switch msg.Type() {
 			case packet.MessageTypeAdvertisement, packet.MessageTypeFeedbackRequest:
 				// Advertisement messages should not be included in FEC blocks
-				e.l.Error("received advertisement message, encoding and sending immediately")
+				e.l.Debug("received advertisement message, encoding and sending immediately")
 				pkt, err := e.fec.EncodeIgnore(msg)
 				if err != nil {
 					e.l.Error("error encoding advertisement message", "error", err)
