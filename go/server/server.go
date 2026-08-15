@@ -46,15 +46,16 @@ type Server struct {
 	scheduler *scheduler
 
 	// No mutex for sendingLimit as it's on the hotpath
-	sendingLimit      atomic.Int64
-	ccMutex           sync.Mutex
-	sentPacketsNumber []uint64
-	sentPackets       atomic.Uint64
-	clientFeedbacks   map[[16]byte]*clientFeedback
-	latestID          uint16
-	lastLoss          time.Time
-	lastLimitAtLoss   atomic.Int64
-	limitedByRate     atomic.Bool
+	sendingLimit                atomic.Int64
+	ccMutex                     sync.Mutex
+	sentPacketsNumber           []uint64
+	sentPackets                 atomic.Uint64
+	clientFeedbacks             map[[16]byte]*clientFeedback
+	latestID                    uint16
+	lastLoss                    time.Time
+	lastLimitAtLoss             atomic.Int64
+	limitedByRate               atomic.Bool
+	feedbackRateAdjustmentTimer *time.Timer
 
 	l *slog.Logger
 }

@@ -20,6 +20,8 @@ func (s *Server) congestionControl() {
 	s.sentPacketsNumber = make([]uint64, nFeedbacks)
 	s.ccMutex.Unlock()
 
+	s.feedbackRateAdjustmentTimer = time.NewTimer(0)
+
 	for {
 		s.adjustRate(s.latestID)
 		// TODO: probably not necessary
@@ -42,7 +44,14 @@ func (s *Server) congestionControl() {
 
 		// fmt.Println("packets: ", s.sentPacketsNumber)
 
-		time.Sleep(timeSpan * 3 / 2 * time.Millisecond)
+		time.Sleep(timeSpan * time.Millisecond)
+
+		s.feedbackRateAdjustmentTimer.Reset(10 * time.Millisecond)
+
+		select {
+		case <-s.feedbackRateAdjustmentTimer.C:
+		case <-time.After(timeSpan * time.Millisecond):
+		}
 	}
 }
 
@@ -123,7 +132,10 @@ func (s *Server) handleFeedback(f *packet.Feedback, src net.IP) {
 		fstats = &clientFeedback{}
 		s.clientFeedbacks[srcBytes] = fstats
 	}
-	fstats.vector = append(fstats.vector, f.NumberPackets)
+	fstats.vector = append(fstats.vector, f.NumberPackets) // TODO: do not blindly append, but put into the vector based on the index
+	if len(fstats.vector) < nFeedbacks {
+		s.feedbackRateAdjustmentTimer.Reset(10 * time.Millisecond)
+	}
 }
 
 func avgLostWithMovingVector(a []uint16, b []uint64) float64 {
