@@ -16,6 +16,11 @@ const MAX_LEAF_DATA_SIZE: usize = u32::MAX as usize;
 const TARGET_PAYLOAD_SIZE: usize = 1400;
 const PACKETS_PER_CHUNK: usize = 16;
 
+pub fn combine_hashes(level: u8, left_hash: &Hash, right_hash: &Hash) -> Hash {
+    let combined_hash = [level.as_bytes(), left_hash, right_hash].concat();
+    return Sha256::digest(&combined_hash).try_into().unwrap();
+}
+
 pub trait MerkleHash {
     fn merkle_hash(&self) -> Hash;
 }
@@ -133,10 +138,9 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
                 if intermediate_hashes.len() >= 2 {
                     let left_node = intermediate_hashes.remove(0);
                     let right_node = intermediate_hashes.remove(0);
-                    let combined_hash = [level.as_bytes(), &left_node.hash, &right_node.hash].concat();
-                    let parent_hash = Sha256::digest(&combined_hash);
+                    let parent_hash = combine_hashes(level, &left_node.hash, &right_node.hash);
                     next_level_hashes.push(Box::new(MerkleNode {
-                        hash: parent_hash.try_into().unwrap(),
+                        hash: parent_hash,
                         left: Some(left_node),
                         right: Some(right_node),
                     }));

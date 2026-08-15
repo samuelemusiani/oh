@@ -9,7 +9,12 @@ use log::{debug, error, trace, warn};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
+use protocol::Hash;
 use crate::error::AppError;
+use crate::client::merkle_pool::*;
+
+// allow max this many feedback packets per second
+const MAX_NUM_FEEDBACK_PACKETS_PER_SEC: u32 = 2000;
 
 struct FeedbackState {
     last_reqest_id: u16,
@@ -21,12 +26,30 @@ struct FeedbackState {
     t_next_send: Option<std::time::Instant>,
 }
 
+struct FileMetadata {
+    size: usize,
+    merkle_tree_height: u8,
+    name: Box<[u8]>,
+}
+
+// lock order of fields with locks is in delcaration order in struct
 pub struct Client {
     socket: UdpSocket,
     multicast_addr: Ipv4Addr,
     multicast_port: u16,
     output_directory: PathBuf,
-    feedback_states: Mutex<HashMap<Ipv6Addr, FeedbackState>>, // TODO: index by ip,port instead?
+    // Any hashes that we know about.
+    merkle_pool: Mutex<MerklePool>,
+    // How much data we received and how much feedback we should send, per sender ip.
+    feedback_states: Mutex<HashMap<Ipv6Addr, FeedbackState>>,
+    // Hashes that we want to request.
+    // (We always try to request from lowest known tree level.)
+    // Manifest hahses, as well as data hashes of files we want to have go in here.
+    // TODO: Do not request (until timeout) if somone already requested, or if answer is already happening. Or: If anything is happening.
+    // TODO: should store manifest hashes separately, as they're higher priority (might even request when there's ongoing traffic)
+    // TODO: should also give up after N times for manifest hashes (unless it's seen again)
+    desired_hashes: Mutex<Vec<MerklePoolIdx>>,
+    file_metadatas: Mutex<HashMap<MerklePoolIdx, FileMetadata>>,
 }
 
 impl Client {
@@ -61,7 +84,10 @@ impl Client {
             multicast_addr,
             multicast_port: port,
             output_directory,
-            feedback_states: Mutex::new(HashMap::default()),
+            merkle_pool: Default::default(),
+            feedback_states: Default::default(),
+            desired_hashes: Default::default(),
+            file_metadatas: Default::default(),
         })
     }
 
@@ -93,23 +119,83 @@ impl Client {
     async fn handle_packet(self: Arc<Self>, buf: Vec<u8>, addr: SocketAddr, len: usize) -> Result<(), AppError> {
         let packet = protocol::parse_packet(&buf[..len])?;
         match packet {
-            protocol::packet::Packet::Advertisement(advertisement_packet) => todo!(),
+            protocol::packet::Packet::Advertisement(advertisement_packet) => {
+                debug!("Client: Handling Advertisement packet from {} (hash = {})",
+                        addr, base16::encode_lower(advertisement_packet.hash));
 
-            protocol::packet::Packet::Metadata(metadata_packet) => todo!(),
+                let (hidx, was_inserted) = {
+                    let mut merkle_pool = self.merkle_pool.lock().await;
+                    let (hidx, was_inserted) = merkle_pool.pool(advertisement_packet.hash);
+                    merkle_pool.node_mut(hidx).is_manifest_root = true;
+                    (hidx, was_inserted)
+                };
+
+                if was_inserted {
+                    // did not see before ==> desire it
+                    // (We desire any Manifest, to find out what files are offered.)
+                    let mut desired_hashes = self.desired_hashes.lock().await;
+                    desired_hashes.push(hidx);
+                }
+            },
+
+            protocol::packet::Packet::Metadata(metadata_packet) => {
+                debug!("Client: Handling Manifest packet from {} for data {} of manifest {}",
+                        addr,base16::encode_lower(metadata_packet.data_hash),
+                        base16::encode_lower(metadata_packet.manifest_hash));
+
+                // Collect all new known hashes
+                let mut merkle_pool = self.merkle_pool.lock().await;
+                let (manifest_hidx,  manifest_hidx_new)   = merkle_pool.pool(metadata_packet.manifest_hash);
+                let (data_hidx,      _data_hidx_new)      = merkle_pool.pool(metadata_packet.data_hash);
+                let (extrameta_hidx, _extrameta_hidx_new) = merkle_pool.pool(metadata_packet.extra_metadata_hash);
+                merkle_pool.node_mut( manifest_hidx).is_manifest_root = true;
+                merkle_pool.node_mut(     data_hidx).is_data_root = true;
+                merkle_pool.node_mut(extrameta_hidx).is_extrameta_root = true;
+                drop(merkle_pool); // unlock
+
+                if manifest_hidx_new {
+                    // Oho, a new manifest that we don't know about.
+                    let mut desired_hashes = self.desired_hashes.lock().await;
+                    desired_hashes.push(manifest_hidx);
+                }
+
+                if let protocol::packet::MetadataPacketData::FileMetadata{
+                            merkle_tree_depth, size_bits, size, name_length, name }
+                        = metadata_packet.data {
+                    // new file meta to store?
+                    let mut file_metadatas = self.file_metadatas.lock().await;
+                    if file_metadatas.get(&data_hidx).is_none() {
+                        file_metadatas.insert(data_hidx, FileMetadata {
+                            size: 0, //TODO
+                            merkle_tree_height: u8::from_be(merkle_tree_depth),
+                            name: Box::from(name), //TODO: name_length relevant?
+                        });
+                    }
+                }
+
+                //TODO: how to tell if whole manifest is received?
+                // ==> compute whole merkle tree every time, by ordering by hash, and check if root hash is correct
+
+                // TODO: tell data collector about new data
+            },
 
             protocol::packet::Packet::RequestLeaves(request_leaves_packet) => {
                 // Only server needs to handle this
-                debug!("Ignoring RequestLeaves packet from {} for root hash {}", addr, base16::encode_lower(request_leaves_packet.root_hash));
+                debug!("Client: Ignoring RequestLeaves packet from {} for root hash {}",
+                        addr, base16::encode_lower(request_leaves_packet.root_hash));
+                //TODO: don't ignore, but use for deduplication
             },
 
             protocol::packet::Packet::RequestLeaf(request_leaf_packet) => {
                 // Only server needs to handle this
-                debug!("Ignoring RequestLeaf packet from {} for root hash {}", addr, base16::encode_lower(request_leaf_packet.root_hash));
+                debug!("Client: Ignoring RequestLeaf packet from {} for root hash {}",
+                        addr, base16::encode_lower(request_leaf_packet.root_hash));
+                //TODO: don't ignore, but use for deduplication
             },
 
             protocol::packet::Packet::Data(data_packet) => {
                 let len = data_packet.length; // this is not be I think (kinda awkward to convert here...)
-                debug!("Handling Data packet from {} ({} bytes)", addr, len);
+                debug!("Client: Handling Data packet from {} ({} bytes)", addr, len);
 
                 let server_ip6 = match addr {
                     SocketAddr::V4(addr_ip4) => { addr_ip4.ip().to_ipv6_mapped() },
@@ -128,11 +214,104 @@ impl Client {
                 todo!("use the data");
             },
 
-            protocol::packet::Packet::MerkleTree(merkle_tree_packet) => todo!(),
+            protocol::packet::Packet::MerkleTree(merkle_tree_packet) => {
+                debug!("Client: Handling MerkleTree packet from {} for root hash {}",
+                        addr, base16::encode_lower(merkle_tree_packet.root_hash));
+
+                let depth = usize::from(u8::from_be(merkle_tree_packet.depth));
+                assert!(merkle_tree_packet.nodes.len() == (1 << depth));
+
+                fn binary_tree_size(depth: usize) -> usize { (1 << depth) * 2 - 1 }
+                fn left_child_idx(i: usize) -> usize { i * 2 + 1 }
+                fn right_child_idx(i: usize) -> usize { left_child_idx(i) + 1 }
+
+                // Find data root that matches
+                // (Required, because otherwise we can't compute the merkle tree.)
+                let root_hidx = {
+                    let merkle_pool = self.merkle_pool.lock().await;
+                    merkle_pool.try_pool(merkle_tree_packet.root_hash)
+                };
+                let root_hidx = if let Some(root_hidx) = root_hidx {
+                    root_hidx
+                } else {
+                    debug!("MerkleTree packet root hash is not known: {}",
+                            base16::encode_lower(merkle_tree_packet.root_hash));
+                    return Ok(());
+                };
+                let full_tree_height = {
+                    let file_metadatas = self.file_metadatas.lock().await;
+                    let file_metadata = file_metadatas.get(&root_hidx);
+                    if let Some(file_metadata) = file_metadata {
+                        file_metadata.merkle_tree_height
+                    } else {
+                        debug!("Metadata for MerkleTree packet root hash is not known: {}",
+                                base16::encode_lower(merkle_tree_packet.root_hash));
+                        return Ok(());
+                    }
+                };
+
+                if depth > full_tree_height.into() {
+                    warn!("MerkleTree packet's depth is too high ({} > {})", depth, full_tree_height);
+                    return Ok(());
+                }
+
+                // Build whole merkle tree
+
+                let mut tree_hashes: Vec<Hash> = Vec::with_capacity(binary_tree_size(depth));
+                if depth != 0 {
+                    tree_hashes.resize(binary_tree_size(depth - 1), Default::default());
+                }
+                tree_hashes.extend_from_slice(merkle_tree_packet.nodes);
+                assert!(tree_hashes.len() == binary_tree_size(depth));
+
+                for level in (0..depth).rev() {
+                    // compute nodes on level level from nodes on level level+1
+                    let idx_begin = if level == 0 { 0 } else { binary_tree_size(level - 1) };
+                    let idx_end = binary_tree_size(level);
+                    for i_out in idx_begin..idx_end {
+                        tree_hashes[i_out] = protocol::data::combine_hashes(
+                                full_tree_height - level as u8,
+                                &tree_hashes[left_child_idx(i_out)],
+                                &tree_hashes[right_child_idx(i_out)]);
+                    }
+                }
+
+                // Check correctness
+                if tree_hashes[0] != *merkle_tree_packet.root_hash {
+                    warn!("Computed merkle tree of MerkleTree packet doesn't match sent root.");
+                    return Ok(());
+                }
+
+                // Store merkle tree in pool
+                // insert hashes
+                let mut tree_hidxs: Vec<MerklePoolIdx> = Vec::with_capacity(tree_hashes.len());
+                let mut merkle_pool = self.merkle_pool.lock().await;
+                for hash in tree_hashes {
+                    let (hidx, _) = merkle_pool.pool(&hash);
+                    tree_hidxs.push(hidx);
+                }
+                // set child-parent relations
+                for level in 0..depth {
+                    let idx_begin = if level == 0 { 0 } else { binary_tree_size(level - 1) };
+                    let idx_end = binary_tree_size(level);
+                    for p_i in idx_begin..idx_end {
+                        let p_hidx = tree_hidxs[p_i];
+                        let l_hidx = tree_hidxs[left_child_idx(p_i)];
+                        let r_hidx = tree_hidxs[right_child_idx(p_i)];
+                        let p_node = merkle_pool.node_mut(p_hidx);
+                        p_node.left_child = Some(l_hidx);
+                        p_node.right_child = Some(r_hidx);
+                        let l_node = merkle_pool.node_mut(l_hidx);
+                        l_node.parent = Some(p_hidx);
+                        let r_node = merkle_pool.node_mut(r_hidx);
+                        r_node.parent = Some(p_hidx);
+                    }
+                }
+            },
 
             protocol::packet::Packet::FeedbackRequest(feedback_request_packet) => {
                 let req_id = u16::from_be(*feedback_request_packet.request_id);
-                debug!("Handling FeedbackRequest from {} (reqest_id = {})", addr, req_id);
+                debug!("Client: Handling FeedbackRequest from {} (reqest_id = {})", addr, req_id);
 
                 let server_ip6 = match addr {
                     SocketAddr::V4(addr_ip4) => { addr_ip4.ip().to_ipv6_mapped() },
@@ -147,8 +326,7 @@ impl Client {
                     // (Note: timespan_ms == 0 is valid. it means feedback should stop immediately)
                 }
 
-                // allow max this many feedback packets per second
-                const MAX_NUM_FEEDBACK_PACKETS_PER_SEC: u32 = 2000;
+                // rate-limit feedback packets per second
                 let max_feedbacks = u16::try_from(MAX_NUM_FEEDBACK_PACKETS_PER_SEC * u32::from(timespan_ms) / 1000).unwrap_or(u16::MAX);
                 if num_feedbacks_to_send > max_feedbacks {
                     warn!("FeedbackRequest num feedbacks too big ({}). Range-limiting to {}.",
@@ -182,8 +360,9 @@ impl Client {
             },
 
             protocol::packet::Packet::Feedback(feedback_packet) => {
-                // Only server needs to handle this
-                debug!("Ignoring feedback packet from {} for {}", addr, base16::encode_lower(feedback_packet.server_ip));
+                // Only server needs to handle this. And feedback packets are not
+                // deduplicated.
+                debug!("Client: Ignoring feedback packet from {} for {}", addr, base16::encode_lower(feedback_packet.server_ip));
             },
         }
 
@@ -250,7 +429,7 @@ impl Client {
                 feedback_states.remove(&server_ip);
             }
 
-            // TODO: awake me on feedback request
+            // TODO: awake me on feedback request, and sleep less long
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
