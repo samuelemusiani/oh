@@ -29,19 +29,11 @@ pub struct Args {
     #[arg(short = 'q', long = "receive_packet_loss", value_parser = parse_probability)]
     pub loss_receive: Option<f64>,
 
-    #[command(subcommand)]
-    pub mode: Mode,
-}
+    #[arg(short = 's', long = "serve", num_args = 1..)]
+    pub server_files: Option<Vec<PathBuf>>,
 
-#[derive(Subcommand, Debug)]
-pub enum Mode {
-    Send {
-        #[arg(required = true, num_args = 1..)]
-        files: Vec<PathBuf>,
-    },
-    Receive {
-        download_directory: PathBuf,
-    },
+    #[arg(conflicts_with = "server_files")]
+    pub download_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -82,28 +74,27 @@ async fn main() -> anyhow::Result<()> {
     let loss = args.loss_model();
     info!("Selected packet loss model: {loss:?}");
 
-    match args.mode {
-        Mode::Send { files } => {
-            info!("Sending files: {files:?}");
-            debug!("Generating data structures for files...");
-            let manifest = protocol::build_manifest_from_files(&files).await?;
-            let manifest = Box::leak(Box::new(manifest));
-            info!("Generated manifest: {}", base16::encode_lower(&manifest.root_hash()));
-            let server = Arc::new(Server::new(manifest, args.multicast_addr, args.interface, args.port).await?);
-            info!("Server initialized, running...");
-            server.run().await?;
-            let _ = tokio::signal::ctrl_c().await;
-            info!("Shutting down server...");
-            Ok(())
-        }
-        Mode::Receive { download_directory } => {
-            println!("Receiving into {}", download_directory.display());
-            let client = Arc::new(Client::new(args.multicast_addr, args.interface, args.port, download_directory).await?);
-            info!("Client initialized, running...");
-            client.run().await?;
-            let _ = tokio::signal::ctrl_c().await;
-            info!("Shutting down client...");
-            Ok(())
-        }
+    if let Some(files) = args.server_files {
+        info!("Sending files: {files:?}");
+        debug!("Generating data structures for files...");
+        let manifest = protocol::build_manifest_from_files(&files).await?;
+        let manifest = Box::leak(Box::new(manifest));
+        info!("Generated manifest: {}", base16::encode_lower(&manifest.root_hash()));
+        let server = Arc::new(Server::new(manifest, args.multicast_addr, args.interface, args.port).await?);
+        info!("Server initialized, running...");
+        server.run().await?;
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Shutting down server...");
+        return Ok(());
     }
+    if let Some(download_directory) = args.download_dir {
+        info!("Receiving into {}", download_directory.display());
+        let client = Arc::new(Client::new(args.multicast_addr, args.interface, args.port, download_directory).await?);
+        info!("Client initialized, running...");
+        client.run().await?;
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Shutting down client...");
+        return Ok(());
+    }
+    return Ok(());
 }
