@@ -50,8 +50,8 @@ impl PartialEq for ProcessedRequest {
 
 pub enum Response {
     MetadataResponse { metadata: Vec<&'static protocol::data::Metadata> },
-    DataResponse { data: protocol::data::DataTree },
-    MerkleTreeResponse { root_node: protocol::data::MerkleNode },
+    DataResponse { data: &'static protocol::data::DataTree, data_leaves: Vec<&'static protocol::data::DataLeaf> },
+    MerkleTreeResponse { root_node: &'static protocol::data::MerkleNode, depth: u8, nodes: Vec<&'static Box<protocol::data::MerkleNode>> },
     EmptyResponse,
 }
 
@@ -77,19 +77,40 @@ impl DataQueue {
         match &processed_request.request {
             QueueableRequest::LeavesRequest { hash } => {
                 if let Some(sub_tree) = manifest.sub_tree(hash) {
-                    let depth = sub_tree.depth();
-                    if depth >= 32 {
+                    let depth = sub_tree.height();
+                    if depth > 32 {
+                        // We can't send a merkle packet with a depth greater than 255, if the depth - 32 is still greater than 255 the client will get another merkle packet for each hash we send him now
+                        let target_depth = std::cmp::min(depth - 32, u8::MAX as u64);
+                        let nodes = sub_tree.get_nodes_at_depth(target_depth);
+                        processed_request.response = Response::MerkleTreeResponse { root_node: sub_tree, depth: target_depth as u8, nodes };
                     } else {
                         let requested_leaf_hashes = sub_tree.get_leaf_hashes();
                         let requested_metadata: Vec<&protocol::data::Metadata> =
                             manifest.into_iter().filter(|metadata| requested_leaf_hashes.contains(&&metadata.merkle_hash())).collect();
-                            processed_request.response = Response::MetadataResponse { metadata: requested_metadata };
+                        processed_request.response = Response::MetadataResponse { metadata: requested_metadata };
                     }
                 } else {
                     for leaf in manifest {
                         match leaf {
                             protocol::data::Metadata::File(file_metadata) => {
                                 if let Some(sub_tree) = file_metadata.data_tree.sub_tree(hash) {
+                                    let depth = sub_tree.height();
+                                    if depth > 32 {
+                                        // We can't send a merkle packet with a depth greater than 255, if the depth - 32 is still greater than 255 the client will get another merkle packet for each hash we send him now
+                                        let target_depth = std::cmp::min(depth - 32, u8::MAX as u64);
+                                        let nodes = sub_tree.get_nodes_at_depth(target_depth);
+                                        processed_request.response =
+                                            Response::MerkleTreeResponse { root_node: sub_tree, depth: target_depth as u8, nodes };
+                                    } else {
+                                        let requested_leaf_hashes = sub_tree.get_leaf_hashes();
+                                        let requested_data_leaves: Vec<&protocol::data::DataLeaf> = file_metadata
+                                            .data_tree
+                                            .into_iter()
+                                            .filter(|data_leaf| requested_leaf_hashes.contains(&&data_leaf.merkle_hash()))
+                                            .collect();
+                                        processed_request.response =
+                                            Response::DataResponse { data: &file_metadata.data_tree, data_leaves: requested_data_leaves };
+                                    }
                                 } else {
                                     // The leaf neither in the manifest nor in any of the data trees, so we ignore it
                                     return;
