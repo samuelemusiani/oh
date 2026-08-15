@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-use protocol::{Hash, packet::Packet};
-use tokio::sync::mpsc::Sender;
+use protocol::{Hash, data::MerkleHash, packet::Packet};
+use tokio::sync::{Mutex, mpsc::Sender};
 
 #[derive(Debug, Clone)]
 pub enum QueueableRequest {
@@ -49,51 +49,65 @@ impl PartialEq for ProcessedRequest {
 }
 
 pub enum Response {
-    MetadataResponse { metadata: Vec<protocol::data::Metadata> },
+    MetadataResponse { metadata: Vec<&'static protocol::data::Metadata> },
     DataResponse { data: protocol::data::DataTree },
     MerkleTreeResponse { root_node: protocol::data::MerkleNode },
     EmptyResponse,
 }
 
 pub struct DataQueue {
-    queue: VecDeque<ProcessedRequest>,
+    queue: Mutex<VecDeque<ProcessedRequest>>,
     packet_queue_sender: Sender<Packet<'static>>,
 }
 
 impl DataQueue {
     pub fn new(packet_queue_sender: Sender<Packet<'static>>) -> Self {
-        DataQueue { queue: VecDeque::new(), packet_queue_sender }
+        DataQueue { queue: Mutex::new(VecDeque::new()), packet_queue_sender }
     }
 
-    pub fn enqueue(&mut self, request: QueueableRequest, manifest: &protocol::data::ManifestTree) {
+    pub async fn enqueue(&self, request: QueueableRequest, manifest: &'static protocol::data::ManifestTree) {
         let mut processed_request = ProcessedRequest { request, response: Response::EmptyResponse };
-        if self.queue.contains(&processed_request) {
+        // Super basic deduplication for requests, this could be improved
+        let queue = self.queue.lock().await;
+        if queue.contains(&processed_request) {
             return;
         }
+        drop(queue);
 
         match &processed_request.request {
             QueueableRequest::LeavesRequest { hash } => {
-                if manifest.contains_hash(hash){
-
-                }else{
+                if let Some(sub_tree) = manifest.sub_tree(hash) {
+                    let depth = sub_tree.depth();
+                    if depth >= 32 {
+                    } else {
+                        let requested_leaf_hashes = sub_tree.get_leaf_hashes();
+                        let requested_metadata: Vec<&protocol::data::Metadata> =
+                            manifest.into_iter().filter(|metadata| requested_leaf_hashes.contains(&&metadata.merkle_hash())).collect();
+                            processed_request.response = Response::MetadataResponse { metadata: requested_metadata };
+                    }
+                } else {
                     for leaf in manifest {
-                        match leaf{
-                            protocol::data::Metadata::File(file_metadata) => todo!(),
+                        match leaf {
+                            protocol::data::Metadata::File(file_metadata) => {
+                                if let Some(sub_tree) = file_metadata.data_tree.sub_tree(hash) {
+                                } else {
+                                    // The leaf neither in the manifest nor in any of the data trees, so we ignore it
+                                    return;
+                                }
+                            }
                             protocol::data::Metadata::Directory => todo!(),
                             protocol::data::Metadata::Stream => todo!(),
                         }
                     }
                 }
             }
-            QueueableRequest::LeafRequest { hash, index } => {
-                
-            }
+            QueueableRequest::LeafRequest { hash, index } => {}
         }
 
-        self.queue.push_back(processed_request);
+        self.queue.lock().await.push_back(processed_request);
     }
 
-    pub fn dequeue(&mut self) -> Option<ProcessedRequest> {
-        self.queue.pop_front()
+    pub async fn dequeue(&mut self) -> Option<ProcessedRequest> {
+        self.queue.lock().await.pop_front()
     }
 }

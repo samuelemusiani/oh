@@ -6,23 +6,26 @@ use tokio::{
     net::UdpSocket,
     sync::{
         Mutex,
-        mpsc::{Receiver, Sender},
+        mpsc::Receiver,
     },
 };
 
 use crate::{
     error::AppError,
-    server::cc::{self, CongestionControl},
+    server::{
+        cc::{self, CongestionControl},
+        data_queue::{DataQueue, QueueableRequest},
+    },
 };
 
 pub struct Server {
     socket: UdpSocket,
     manifest: protocol::data::ManifestTree,
     packet_queue: Mutex<Receiver<Packet<'static>>>,
-    packet_queue_sender: Sender<Packet<'static>>,
     multicast_addr: Ipv4Addr,
     multicast_port: u16,
     congestion_control: CongestionControl,
+    data_queue: DataQueue,
 }
 
 impl Server {
@@ -52,10 +55,10 @@ impl Server {
             socket,
             manifest,
             packet_queue: Mutex::new(packet_queue),
-            packet_queue_sender,
             multicast_addr,
             multicast_port: port,
             congestion_control: CongestionControl::new(),
+            data_queue: DataQueue::new(packet_queue_sender),
         })
     }
 
@@ -93,16 +96,19 @@ impl Server {
             }
             Packet::RequestLeaves(request_leaves_packet) => {
                 info!("Handling request for leaves from {}, with hash {}", addr, base16::encode_lower(&request_leaves_packet.root_hash));
-                if !self.manifest.contains_hash(&request_leaves_packet.root_hash) {
-                    debug!(
-                        "Ignoring request for leaves from {} with hash {} because we don't have it",
-                        addr,
-                        base16::encode_lower(&request_leaves_packet.root_hash)
-                    );
-                    return Ok(());
-                }
+                self.data_queue.enqueue(QueueableRequest::LeavesRequest { hash: *request_leaves_packet.root_hash }, &self.manifest).await;
             }
-            Packet::RequestLeaf(request_leaf_packet) => todo!(),
+            Packet::RequestLeaf(request_leaf_packet) => {
+                info!(
+                    "Handling request for leaf from {}, with hash {} and index {}",
+                    addr,
+                    base16::encode_lower(&request_leaf_packet.root_hash),
+                    request_leaf_packet.index
+                );
+                self.data_queue
+                    .enqueue(QueueableRequest::LeafRequest { hash: *request_leaf_packet.root_hash, index: request_leaf_packet.index }, &self.manifest)
+                    .await;
+            }
             Packet::Data(data_packet) => {
                 // TODO: Check if some other server is serving the same hash as we are and cancel our transmission if the other servers IP is lower than ours.
                 debug!("Ignoring data packet from {} with root hash {}", addr, base16::encode_lower(&data_packet.root_hash));
