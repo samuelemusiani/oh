@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,6 +52,7 @@ type Server struct {
 	clientFeedbacks   map[[16]byte]*clientFeedback
 	latestID          uint16
 	lastLoss          time.Time
+	lastLimitAtLoss   atomic.Int64
 	limitedByRate     atomic.Bool
 
 	l *slog.Logger
@@ -170,7 +170,7 @@ func (s *Server) sendLoop() {
 	// ------------- GRAPH -------------------
 	graphChan := make(chan uint64, 1024*1024)
 	go func() {
-		path := "s_graph_" + strconv.FormatUint(uint64(time.Now().UnixMilli()), 10)
+		path := "s_graph"
 		f, err := os.Create(path)
 		if err != nil {
 			panic(fmt.Sprintf("could not open file %s: %s", path, err.Error()))

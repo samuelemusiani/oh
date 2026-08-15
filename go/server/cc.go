@@ -42,7 +42,7 @@ func (s *Server) congestionControl() {
 
 		// fmt.Println("packets: ", s.sentPacketsNumber)
 
-		time.Sleep(2 * timeSpan * time.Millisecond)
+		time.Sleep(timeSpan * 3 / 2 * time.Millisecond)
 	}
 }
 
@@ -64,9 +64,10 @@ func (s *Server) adjustRate(id uint16) {
 
 	if len(allLosses) == 0 {
 		if s.latestID != 0 {
-			s.sendingLimit.Store(s.sendingLimit.Load() / 2)
-			fmt.Println("DECREASING RATE", s.sendingLimit.Load())
+			ll := s.sendingLimit.Swap(s.sendingLimit.Load() / 2)
+			s.lastLimitAtLoss.Store(ll)
 			s.lastLoss = time.Now()
+			fmt.Println("DECREASING RATE", s.sendingLimit.Load(), s.lastLimitAtLoss.Load())
 		}
 		return
 	}
@@ -77,14 +78,20 @@ func (s *Server) adjustRate(id uint16) {
 
 	fmt.Println("index", index, "allLosses[index]", allLosses[index])
 	if allLosses[index] < 0.01 && s.limitedByRate.Load() {
-		factor := 1 + 0.01*math.Pow(float64(time.Since(s.lastLoss))/1e9, 1.5)
-		fmt.Println("factor", factor)
-		s.sendingLimit.Store(int64(float64(s.sendingLimit.Load()) * factor))
+		// factor := 1 + 0.01*math.Pow(float64(time.Since(s.lastLoss))/1e9, 1.5)
+		// fmt.Println("factor", factor)
+		// s.sendingLimit.Store(int64(float64(s.sendingLimit.Load()) * factor))
+		if s.lastLimitAtLoss.Load() == 0 { // No loss yet
+			s.sendingLimit.Store(s.sendingLimit.Load() * 2)
+		} else { // Cubic
+			s.sendingLimit.Store(int64(math.Floor(cubic(0.7, s.lastLimitAtLoss.Load(), s.lastLoss, 0.4))))
+		}
 		fmt.Println("INCREASING RATE", s.sendingLimit.Load())
-	} else if allLosses[index] > 0.3 {
-		s.sendingLimit.Store(s.sendingLimit.Load() / 2)
-		fmt.Println("DECREASING RATE", s.sendingLimit.Load())
+	} else if allLosses[index] > 0.05 {
+		ll := s.sendingLimit.Swap(s.sendingLimit.Load() / 2) // TODO: probably we have to match beta
+		s.lastLimitAtLoss.Store(ll)
 		s.lastLoss = time.Now()
+		fmt.Println("DECREASING RATE", s.sendingLimit.Load(), s.lastLimitAtLoss.Load())
 	}
 }
 
@@ -142,4 +149,12 @@ func avgLostWithMovingVector(a []uint16, b []uint64) float64 {
 	}
 
 	return loss
+}
+
+func cubic(beta float64, wMax int64, lastLoss time.Time, C float64) float64 {
+	fmt.Println("beta", beta, "wMax", wMax, "lastLoss", float64(time.Since(lastLoss).Milliseconds())/1e3, "C", C)
+	K := math.Pow((float64(wMax)*(1-beta))/C, 1.0/3.0)
+	tmp := C*math.Pow((float64(time.Since(lastLoss).Milliseconds())/1e3-K), 3.0) + float64(wMax)
+	fmt.Println("K", K, "tmp", tmp)
+	return tmp
 }
