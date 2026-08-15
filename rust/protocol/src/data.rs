@@ -69,7 +69,7 @@ impl MerkleNode {
         }
         None
     }
-    pub fn height(&self) -> u64 {
+    pub fn height(&self) -> u8 {
         if self.is_leaf() {
             0
         } else {
@@ -78,7 +78,7 @@ impl MerkleNode {
             1 + std::cmp::max(left_depth, right_depth)
         }
     }
-    pub fn get_nodes_at_depth(self: &Box<MerkleNode>, depth: u64) -> Vec<&Box<MerkleNode>> {
+    pub fn get_nodes_at_depth(self: &Box<MerkleNode>, depth: u8) -> Vec<&Box<MerkleNode>> {
         if depth == 0 {
             return vec![self];
         }
@@ -111,8 +111,7 @@ where
 
 impl<T: MerkleHash, E> MerkleTree<T, E> {
     pub async fn new(leaves: Vec<T>, extra_data: E) -> Result<Self, OHProtocolError> {
-        //TODO: Clarify which data type the level is supposed to be, the hash changes depending on the type/size of level.
-        let mut level = 1;
+        let mut level: u8 = 1;
         let empty_hash = Sha256::digest(0u8.as_bytes());
         let mut intermediate_hashes: Vec<Box<MerkleNode>> =
             leaves.iter().map(|leaf| Box::new(MerkleNode { hash: leaf.merkle_hash(), left: None, right: None })).collect();
@@ -181,7 +180,7 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
         self.tree_node.get_node_with_hash(hash)
     }
 
-    pub fn nodes_at_depth(&self, depth: u64) -> Vec<&Box<MerkleNode>> {
+    pub fn nodes_at_depth(&self, depth: u8) -> Vec<&Box<MerkleNode>> {
         self.tree_node.get_nodes_at_depth(depth)
     }
 
@@ -245,16 +244,14 @@ impl FileMetadata {
             let mut stream = Box::pin(chunker.as_stream());
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.expect("Failed to read chunk");
-                //TODO: Clrify which data type the level is supposed to be, the hash changes depending on the type/size of level.
-                let chunk_hash = Sha256::digest([0.as_bytes(), &chunk.data].concat());
+                let chunk_hash = Sha256::digest([0u8.as_bytes(), &chunk.data].concat());
                 let leaf = DataLeaf { hash: chunk_hash.try_into().unwrap(), offset: chunk.offset, length: chunk.data.len() as u64 };
                 leaves.push(leaf);
             }
         } else {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
-            //TODO: Clarify which data type the level is supposed to be, the hash changes depending on the type/size of level.
-            let leaf_hash = Sha256::digest([0.as_bytes(), &data].concat());
+            let leaf_hash = Sha256::digest([0u8.as_bytes(), &data].concat());
             let leaf = DataLeaf { hash: leaf_hash.try_into().unwrap(), offset: 0, length: data.len() as u64 };
             leaves.push(leaf);
         }
@@ -274,8 +271,7 @@ impl FileMetadata {
             },
         };
         let encoded_packet = encode_packet(Packet::Metadata(metadata_packet))?;
-        //TODO: Clarify which data type the level is supposed to be, the hash changes depending on the type/size of level.
-        Ok(Self { name: filename, data_tree, hash: Sha256::digest([0.as_bytes(), &encoded_packet].concat()).try_into().unwrap() })
+        Ok(Self { name: filename, data_tree, hash: Sha256::digest([0u8.as_bytes(), &encoded_packet].concat()).try_into().unwrap() })
     }
 }
 
@@ -355,7 +351,7 @@ mod tests {
         let sub_tree_node = sub_tree.unwrap();
         assert_eq!(sub_tree_node.hash(), &leaf_hash);
         let intermediate_hash =
-            Sha256::digest([1u32.as_bytes(), &TestLeaf::new_with_number(1).merkle_hash(), &TestLeaf::new_with_number(2).merkle_hash()].concat());
+            Sha256::digest([1u8.as_bytes(), &TestLeaf::new_with_number(1).merkle_hash(), &TestLeaf::new_with_number(2).merkle_hash()].concat());
         println!("Intermediate hash: {}", base16::encode_lower(&intermediate_hash));
         let intermediate_hash: Hash = intermediate_hash.try_into().unwrap();
         let sub_tree = tree.sub_tree(&intermediate_hash);

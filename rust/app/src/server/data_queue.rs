@@ -80,7 +80,7 @@ impl DataQueue {
                     let depth = sub_tree.height();
                     if depth > 32 {
                         // We can't send a merkle packet with a depth greater than 255, if the depth - 32 is still greater than 255 the client will get another merkle packet for each hash we send him now
-                        let target_depth = std::cmp::min(depth - 32, u8::MAX as u64);
+                        let target_depth = depth - 32;
                         let nodes = sub_tree.get_nodes_at_depth(target_depth);
                         processed_request.response = Response::MerkleTreeResponse { root_node: sub_tree, depth: target_depth as u8, nodes };
                     } else {
@@ -97,7 +97,7 @@ impl DataQueue {
                                     let depth = sub_tree.height();
                                     if depth > 32 {
                                         // We can't send a merkle packet with a depth greater than 255, if the depth - 32 is still greater than 255 the client will get another merkle packet for each hash we send him now
-                                        let target_depth = std::cmp::min(depth - 32, u8::MAX as u64);
+                                        let target_depth = depth - 32;
                                         let nodes = sub_tree.get_nodes_at_depth(target_depth);
                                         processed_request.response =
                                             Response::MerkleTreeResponse { root_node: sub_tree, depth: target_depth as u8, nodes };
