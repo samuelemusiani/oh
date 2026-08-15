@@ -69,6 +69,15 @@ impl MerkleNode {
         }
         None
     }
+    pub fn depth(&self) -> u8 {
+        if self.is_leaf() {
+            0
+        } else {
+            let left_depth = self.left.as_ref().map_or(0, |left| left.depth());
+            let right_depth = self.right.as_ref().map_or(0, |right| right.depth());
+            1 + std::cmp::max(left_depth, right_depth)
+        }
+    }
 }
 
 impl PartialEq for MerkleNode {
