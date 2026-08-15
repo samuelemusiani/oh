@@ -12,6 +12,7 @@
       devShells.default = pkgs.mkShell {
         strictDeps = true;
         nativeBuildInputs = [ pkgs.typst ];
+        TYPST_FONT_PATHS = lib.concatStringsSep ":" [ pkgs.newcomputermodern ];
       };
     };
   };
@@ -20,7 +21,7 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     nixnet.inputs.nixpkgs.follows = "nixpkgs";
     nixnet.url = "github:hendrikcech/nixnet?ref=protocol-design";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     pimd.inputs.nixpkgs.follows = "nixpkgs";
     pimd.url = "github:hendrikcech/pimd";
   };
