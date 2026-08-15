@@ -14,3 +14,4 @@ tokio = { version = "1.53.1", features = ["full"] }
 base16 = "0.2.1"
 thiserror = "2.0.20"
 tokio-stream = "0.1.19"
+rand = "0.10.2"
