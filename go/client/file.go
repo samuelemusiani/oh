@@ -434,6 +434,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			chInfo.reRequest.Reset(chInfo.lastTimeout) // TODO: maybe an exponential backoff would be better
 			// We can request the chunk again, by hash :)
 
+			c.l["file"].Debug("timeout waiting for finishing chunk for file", "file_hash", htos(hf), "chunk_hash", htos(chInfo.hash))
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
@@ -481,7 +482,15 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 					continue
 				}
 
-				c.l["file"].Error("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
+				if slices.Contains(cHandler.chunksToWrite, uint32(i)) {
+					continue
+				}
+
+				if len(cHandler.chunksToWrite) > 0 && cHandler.chunksToWrite[len(cHandler.chunksToWrite)-1] < uint32(i) {
+					break
+				}
+
+				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
 				go c.scheduler.requestLeafByIndex(hf, uint32(i))
 				leavesToRequest++
 				if leavesToRequest >= 8 {
