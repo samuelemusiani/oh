@@ -69,14 +69,27 @@ impl MerkleNode {
         }
         None
     }
-    pub fn depth(&self) -> u8 {
+    pub fn height(&self) -> u64 {
         if self.is_leaf() {
             0
         } else {
-            let left_depth = self.left.as_ref().map_or(0, |left| left.depth());
-            let right_depth = self.right.as_ref().map_or(0, |right| right.depth());
+            let left_depth = self.left.as_ref().map_or(0, |left| left.height());
+            let right_depth = self.right.as_ref().map_or(0, |right| right.height());
             1 + std::cmp::max(left_depth, right_depth)
         }
+    }
+    pub fn get_nodes_at_depth(self: &Box<MerkleNode>, depth: u64) -> Vec<&Box<MerkleNode>> {
+        if depth == 0 {
+            return vec![self];
+        }
+        let mut nodes = Vec::new();
+        if let Some(left) = &self.left {
+            nodes.extend(left.get_nodes_at_depth(depth - 1));
+        }
+        if let Some(right) = &self.right {
+            nodes.extend(right.get_nodes_at_depth(depth - 1));
+        }
+        nodes
     }
 }
 
@@ -119,7 +132,6 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
                     let right_node = intermediate_hashes.remove(0);
                     let combined_hash = [level.as_bytes(), &left_node.hash, &right_node.hash].concat();
                     let parent_hash = Sha256::digest(&combined_hash);
-                    println!("Level {}: left hash: {}, right hash: {}, parent hash: {}", level, base16::encode_lower(&left_node.hash), base16::encode_lower(&right_node.hash), base16::encode_lower(&parent_hash));
                     next_level_hashes.push(Box::new(MerkleNode {
                         hash: parent_hash.try_into().unwrap(),
                         left: Some(left_node),
@@ -144,9 +156,11 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
     pub fn root_hash(&self) -> &Hash {
         &self.tree_node.hash
     }
+
     pub fn len(&self) -> usize {
         self.leaves.len()
     }
+
     pub fn depth(&self) -> u8 {
         let mut depth = 0;
         let mut len = self.leaves.len();
@@ -159,28 +173,18 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
         }
         depth
     }
+
     pub fn sub_tree(&self, hash: &Hash) -> Option<&Box<MerkleNode>> {
         if !self.contains_hash(hash) {
             return None;
         }
         self.tree_node.get_node_with_hash(hash)
     }
-    pub fn nodes_at_depth(&self, depth: u8) -> Vec<&Box<MerkleNode>> {
-        let mut nodes = vec![&self.tree_node];
-        for _ in 0..depth {
-            let mut next_level_nodes = Vec::new();
-            for node in nodes {
-                if let Some(left) = &node.left {
-                    next_level_nodes.push(left);
-                }
-                if let Some(right) = &node.right {
-                    next_level_nodes.push(right);
-                }
-            }
-            nodes = next_level_nodes;
-        }
-        nodes
+
+    pub fn nodes_at_depth(&self, depth: u64) -> Vec<&Box<MerkleNode>> {
+        self.tree_node.get_nodes_at_depth(depth)
     }
+
     fn next_power_of_two(n: usize) -> usize {
         let mut n = n;
         if n <= 1 {
@@ -364,5 +368,26 @@ mod tests {
         let non_existent_hash: Hash = non_existent_hash.try_into().unwrap();
         let sub_tree = tree.sub_tree(&non_existent_hash);
         assert!(sub_tree.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_merkle_node_get_nodes_at_depth() {
+        let leaves = vec![TestLeaf::new_with_number(1), TestLeaf::new_with_number(2), TestLeaf::new_with_number(3), TestLeaf::new_with_number(4)];
+        let tree = crate::data::MerkleTree::new(leaves, ()).await.unwrap();
+        let root_node = &tree.tree_node;
+        let depth_0_nodes = root_node.get_nodes_at_depth(0);
+        assert_eq!(depth_0_nodes.len(), 1);
+        assert_eq!(depth_0_nodes[0].hash(), tree.root_hash());
+        let depth_2_nodes = root_node.get_nodes_at_depth(2);
+        assert_eq!(depth_2_nodes.len(), 4);
+        let expected_hashes = vec![
+            TestLeaf::new_with_number(1).merkle_hash(),
+            TestLeaf::new_with_number(2).merkle_hash(),
+            TestLeaf::new_with_number(3).merkle_hash(),
+            TestLeaf::new_with_number(4).merkle_hash(),
+        ];
+        for (node, expected_hash) in depth_2_nodes.iter().zip(expected_hashes.iter()) {
+            assert_eq!(node.hash(), expected_hash);
+        }
     }
 }
