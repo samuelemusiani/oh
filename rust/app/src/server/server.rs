@@ -21,7 +21,7 @@ use crate::{
 
 pub struct Server {
     socket: UdpSocket,
-    manifest: protocol::data::ManifestTree,
+    manifest: &'static protocol::data::ManifestTree,
     packet_queue: Mutex<Receiver<Packet<'static>>>,
     multicast_addr: Ipv4Addr,
     multicast_port: u16,
@@ -31,7 +31,7 @@ pub struct Server {
 
 impl Server {
     pub async fn new(
-        manifest: protocol::data::ManifestTree,
+        manifest: &'static protocol::data::ManifestTree,
         multicast_addr: std::net::IpAddr,
         interface: Option<std::net::IpAddr>,
         port: u16,

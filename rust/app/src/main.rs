@@ -87,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
             info!("Sending files: {files:?}");
             debug!("Generating data structures for files...");
             let manifest = protocol::build_manifest_from_files(&files).await?;
+            let manifest = Box::leak(Box::new(manifest));
             info!("Generated manifest: {}", base16::encode_lower(&manifest.root_hash()));
             let server = Arc::new(Server::new(manifest, args.multicast_addr, args.interface, args.port).await?);
             info!("Server initialized, running...");
