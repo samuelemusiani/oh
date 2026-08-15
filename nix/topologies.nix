@@ -16,11 +16,7 @@
 #   topo2-a-<seed>-n<nReceivers>: p = q ~ U(0, 0.1)
 #   topo2-b-<seed>-n<nReceivers>: p ~ U(0, 0.1), q ~ U(0.05, 0.2)
 #   topo3-<seed> (fixed 9-receiver structure, independent of nReceivers)
-{
-  pkgs,
-  nixnet,
-  oh-go,
-}:
+{ pkgs, nixnet, oh-go }:
 let
   inherit (pkgs) lib;
 
@@ -28,7 +24,7 @@ let
   testFile = pkgs.runCommand "reproducible-10mb-file.bin" {
     nativeBuildInputs = [ pkgs.openssl ];
   } ''
-    (openssl enc -aes-256-ctr -pass pass:"fixed-seed-phrase" -nosalt </dev/zero 2>/dev/null || true) | dd bs=4k iflag=fullblock count=2560 of=$out
+    (openssl enc -aes-256-ctr -pass pass:"fixed-seed-phrase" -nosalt </dev/zero 2>/dev/null || true) | dd bs=4k iflag=fullblock count=2 of=$out
   ''; # 4k x 2560
 
   # The seed determines all randomized link (topo 2 and 3)
@@ -53,37 +49,23 @@ let
   # Queue limit for a link in packets: the bandwidth-delay product (rounded up,
   # assuming 1500-byte MTU; mirrors nixnet's netem.autoLimit formula) plus a
   # random extra buffer Q ~ U(20, 100).
-  bdpLimit =
-    {
-      rateMbit,
-      delayMs,
-      label,
-    }:
+  bdpLimit = { rateMbit, delayMs, label }:
     let
       bdp = rateMbit * 1000000 / 8 * delayMs / 1000.0 / 1500;
       q = uniformInt "${label}:q" 20 100;
-    in
-    builtins.ceil bdp + q;
+    in builtins.ceil bdp + q;
 
   # --- shared testbed configuration ----------------------------------------
   commonConfig = enableTmux: {
     arp = false;
     arpPrefill = true;
     nodePackages = with pkgs; [
-      coreutils
-      bash
-      iproute2
-      iputils
-      tcpdump
-      pkgs.smcroute
+      coreutils bash
+      iproute2 iputils
+      tcpdump smcroute
     ];
     testbedPackages = lib.mkOptionDefault (
-      [
-        pkgs.smcroute
-      ]
-      ++ lib.optionals enableTmux [
-        pkgs.tmux
-      ]
+      [ pkgs.smcroute ] ++ lib.optionals enableTmux [ pkgs.tmux ]
     );
     scripts = lib.optionalAttrs enableTmux {
       tmux-menu = {
@@ -126,12 +108,7 @@ let
   };
 
   # Install static multicast forwarding
-  smcrouteSetup =
-    {
-      ns,
-      iif,
-      oifs,
-    }:
+  smcrouteSetup = { ns, iif, oifs }:
     let
       allIfs = [ iif ] ++ oifs;
       mkRoute = inIf: ''
@@ -146,83 +123,44 @@ let
     '';
 
   # A leaf node (sender or receiver) with a single interface veth0
-  mkLeaf =
-    {
-      addr,
-      gw,
-      scripts ? { },
-    }:
-    {
-      networking.interfaces.veth0.ipv4 = {
-        addresses = [
-          {
-            address = addr;
-            prefixLength = 24;
-          }
-        ];
-        routes = [
-          {
-            address = "0.0.0.0";
-            prefixLength = 0;
-            via = gw;
-          }
-        ];
-      };
-      inherit scripts;
+  mkLeaf = { addr, gw, scripts ? { } }: {
+    networking.interfaces.veth0.ipv4 = {
+      addresses = [ { address = addr; prefixLength = 24; } ];
+      routes = [ { address = "0.0.0.0"; prefixLength = 0; via = gw; } ];
     };
+    inherit scripts;
+  };
 
   senderScripts =
     enableTmux:
     lib.optionalAttrs (!enableTmux) {
-      sender = {
-        exec = senderCmd { iface = "veth0"; };
-      };
+      sender = { exec = senderCmd { iface = "veth0"; }; };
     };
-  receiverScripts = {
-    receiver = {
-      exec = receiverCmd { iface = "veth0"; };
-      await = true;
-    };
+  receiverScripts.receiver = {
+    exec = receiverCmd { iface = "veth0"; };
+    await = true;
   };
 
   # --- star topology (topologies 1 and 2) -----------------------------------
   # Central router; the sender is on 10.0.1.0/24, receiver k on 10.0.(k+1).0/24.
-  mkStarConfig =
-    {
-      name,
-      enableTmux,
-      senderLink,
-      receiverLinks,
-    }:
+  mkStarConfig = { name, enableTmux, senderLink, receiverLinks }:
     let
       n = lib.length receiverLinks;
       routerAddr = i: "10.0.${toString i}.1";
       mkVeth = i: ns: link: {
-        a = {
-          node = "router";
-          iface = "veth${toString i}";
-        };
-        b = {
-          node = ns;
-          iface = "veth0";
-        };
+        a = { node = "router"; iface = "veth${toString i}"; };
+        b = { node = ns; iface = "veth0"; };
         netem = link;
       };
     in
-    commonConfig enableTmux
-    // {
+    commonConfig enableTmux // {
       inherit name;
       nodes = {
         router = {
           networking.interfaces = lib.listToAttrs (
             map (i: {
               name = "veth${toString i}";
-              value.ipv4.addresses = [
-                {
-                  address = routerAddr i;
-                  prefixLength = 24;
-                }
-              ];
+              value.ipv4.addresses = [ { address = routerAddr i; prefixLength = 24; } ];
             }) (lib.range 1 (n + 1))
           );
           sysctl = routerSysctl;
@@ -239,8 +177,7 @@ let
           gw = routerAddr 1;
           scripts = senderScripts enableTmux;
         };
-      }
-      // lib.listToAttrs (
+      } // lib.listToAttrs (
         lib.imap1 (k: link: {
           name = "recv-${toString k}";
           value = mkLeaf {
@@ -250,10 +187,7 @@ let
           };
         }) receiverLinks
       );
-      veths = {
-        sender = mkVeth 1 "sender" senderLink;
-      }
-      // lib.listToAttrs (
+      veths = { sender = mkVeth 1 "sender" senderLink; } // lib.listToAttrs (
         lib.imap1 (k: link: {
           name = "recv-${toString k}";
           value = mkVeth (k + 1) "recv-${toString k}" link;
@@ -265,37 +199,15 @@ let
   topo1Variants =
     let
       senderLosses = [
-        {
-          label = "s0";
-          loss.percent = 0.0;
-        }
-        {
-          label = "s001";
-          loss.percent = 0.01;
-        }
-        {
-          label = "s005";
-          loss.percent = 0.05;
-        }
+        { label = "s0"; loss.percent = 0.0; }
+        { label = "s001"; loss.percent = 0.01; }
+        { label = "s005"; loss.percent = 0.05; }
       ];
-      delays = [
-        1
-        10
-        100
-      ];
+      delays = [ 1 10 100 ];
       recvLosses = [
-        {
-          label = "r0";
-          loss.percent = 0;
-        }
-        {
-          label = "r001";
-          loss.percent = 0.01;
-        }
-        {
-          label = "r005";
-          loss.percent = 0.05;
-        }
+        { label = "r0"; loss.percent = 0; }
+        { label = "r001"; loss.percent = 0.01; }
+        { label = "r005"; loss.percent = 0.05; }
         {
           label = "rp001q01";
           loss = {
@@ -310,12 +222,7 @@ let
     in
     map
       (
-        {
-          s,
-          d,
-          r,
-        }:
-        rec {
+        { s, d, r }: rec {
           name = "topo1-${s.label}-d${toString d}-${r.label}-n${toString nReceivers}";
           mkCfg =
             enableTmux:
@@ -402,13 +309,10 @@ let
   # 10.2.k.0/24 for router2 leaves.
   topo3Variant =
     let
-      recvLink =
-        k:
-        let
+      recvLink = k: let
           rateMbit = uniformInt "topo3:recv${toString k}:rate" 5 20;
           delayMs = uniformInt "topo3:recv${toString k}:delay" 5 50;
-        in
-        {
+        in {
           inherit rateMbit delayMs;
           limit = bdpLimit {
             inherit rateMbit delayMs;
@@ -423,16 +327,14 @@ let
           };
         };
       recvKeys = lib.range 1 9;
-      recvRouter =
-        k:
+      recvRouter = k:
         if k <= 3 then
           "router1"
         else if k <= 5 then
           "router0"
         else
           "router2";
-      recvSubnet =
-        k:
+      recvSubnet = k:
         if k <= 3 then
           "10.1.${toString k}"
         else if k <= 5 then
@@ -440,8 +342,7 @@ let
         else
           "10.2.${toString k}";
       # The interfaces of `router` that face its receivers.
-      routerLeafIfaces =
-        router:
+      routerLeafIfaces = router:
         lib.listToAttrs (
           map (k: {
             name = "veth${toString k}";
@@ -453,65 +354,31 @@ let
             ];
           }) (lib.filter (k: recvRouter k == router) recvKeys)
         );
-    in
-    {
+    in {
       name = "topo3-${seed}";
-      mkCfg =
-        enableTmux:
-        commonConfig enableTmux
-        // {
+      mkCfg = enableTmux:
+        commonConfig enableTmux // {
           name = "topo3-${seed}";
           nodes = {
             router0 = {
               networking.interfaces = {
-                veth1.ipv4.addresses = [
-                  {
-                    address = "10.0.1.1";
-                    prefixLength = 24;
-                  }
-                ];
+                veth1.ipv4.addresses = [ { address = "10.0.1.1"; prefixLength = 24; } ];
                 veth2.ipv4 = {
-                  addresses = [
-                    {
-                      address = "10.0.2.1";
-                      prefixLength = 24;
-                    }
-                  ];
-                  routes = [
-                    {
-                      address = "10.1.0.0";
-                      prefixLength = 16;
-                      via = "10.0.2.2";
-                    }
-                  ];
+                  addresses = [ { address = "10.0.2.1"; prefixLength = 24; } ];
+                  routes = [ { address = "10.1.0.0"; prefixLength = 16; via = "10.0.2.2"; } ];
                 };
                 veth3.ipv4 = {
-                  addresses = [
-                    {
-                      address = "10.0.3.1";
-                      prefixLength = 24;
-                    }
-                  ];
-                  routes = [
-                    {
-                      address = "10.2.0.0";
-                      prefixLength = 16;
-                      via = "10.0.3.2";
-                    }
-                  ];
+                  addresses = [ { address = "10.0.3.1"; prefixLength = 24; } ];
+                  routes = [ { address = "10.2.0.0"; prefixLength = 16; via = "10.0.3.2"; } ];
                 };
-              }
-              // routerLeafIfaces "router0";
+              } // routerLeafIfaces "router0";
               sysctl = routerSysctl;
               # veth1 faces the sender; forward out to router1 (veth2),
               # router2 (veth3), and router0's own receivers (veth4, veth5).
               postSetup = smcrouteSetup {
                 ns = "router0";
                 iif = "veth1";
-                oifs = [
-                  "veth2"
-                  "veth3"
-                ]
+                oifs = [ "veth2" "veth3" ]
                 ++ lib.attrNames (routerLeafIfaces "router0");
               };
               #scripts.tcpdump.exec = "tcpdump -i any -w router0.pcap";
@@ -519,22 +386,10 @@ let
             router1 = {
               networking.interfaces = {
                 veth0.ipv4 = {
-                  addresses = [
-                    {
-                      address = "10.0.2.2";
-                      prefixLength = 24;
-                    }
-                  ];
-                  routes = [
-                    {
-                      address = "0.0.0.0";
-                      prefixLength = 0;
-                      via = "10.0.2.1";
-                    }
-                  ];
+                  addresses = [ { address = "10.0.2.2"; prefixLength = 24; } ];
+                  routes = [ { address = "0.0.0.0"; prefixLength = 0; via = "10.0.2.1"; } ];
                 };
-              }
-              // routerLeafIfaces "router1";
+              } // routerLeafIfaces "router1";
               sysctl = routerSysctl;
               # veth0 faces router0 (toward the sender); forward out to this
               # router's receivers (recv-1..recv-3).
@@ -548,22 +403,10 @@ let
             router2 = {
               networking.interfaces = {
                 veth0.ipv4 = {
-                  addresses = [
-                    {
-                      address = "10.0.3.2";
-                      prefixLength = 24;
-                    }
-                  ];
-                  routes = [
-                    {
-                      address = "0.0.0.0";
-                      prefixLength = 0;
-                      via = "10.0.3.1";
-                    }
-                  ];
+                  addresses = [ { address = "10.0.3.2"; prefixLength = 24; } ];
+                  routes = [ { address = "0.0.0.0"; prefixLength = 0; via = "10.0.3.1"; } ];
                 };
-              }
-              // routerLeafIfaces "router2";
+              } // routerLeafIfaces "router2";
               sysctl = routerSysctl;
               # veth0 faces router0 (toward the sender); forward out to this
               # router's receivers (recv-6..recv-9).
@@ -579,8 +422,7 @@ let
               gw = "10.0.1.1";
               scripts = senderScripts enableTmux;
             };
-          }
-          // lib.listToAttrs (
+          } // lib.listToAttrs (
             map (k: {
               name = "recv-${toString k}";
               value = mkLeaf {
@@ -592,14 +434,8 @@ let
           );
           veths = {
             sender = {
-              a = {
-                node = "router0";
-                iface = "veth1";
-              };
-              b = {
-                node = "sender";
-                iface = "veth0";
-              };
+              a = { node = "router0"; iface = "veth1"; };
+              b = { node = "sender"; iface = "veth0"; };
               netem = {
                 delayMs = 10;
                 rateMbit = 30;
@@ -608,14 +444,8 @@ let
               };
             };
             router1 = {
-              a = {
-                node = "router0";
-                iface = "veth2";
-              };
-              b = {
-                node = "router1";
-                iface = "veth0";
-              };
+              a = { node = "router0"; iface = "veth2"; };
+              b = { node = "router1"; iface = "veth0"; };
               netem = {
                 delayMs = 40;
                 rateMbit = 15;
@@ -630,14 +460,8 @@ let
               };
             };
             router2 = {
-              a = {
-                node = "router0";
-                iface = "veth3";
-              };
-              b = {
-                node = "router2";
-                iface = "veth0";
-              };
+              a = { node = "router0"; iface = "veth3"; };
+              b = { node = "router2"; iface = "veth0"; };
               netem = {
                 delayMs = 20;
                 rateMbit = 20;
@@ -651,19 +475,12 @@ let
                 };
               };
             };
-          }
-          // lib.listToAttrs (
+          } // lib.listToAttrs (
             map (k: {
               name = "recv-${toString k}";
               value = {
-                a = {
-                  node = recvRouter k;
-                  iface = "veth${toString k}";
-                };
-                b = {
-                  node = "recv-${toString k}";
-                  iface = "veth0";
-                };
+                a = { node = recvRouter k; iface = "veth${toString k}"; };
+                b = { node = "recv-${toString k}"; iface = "veth0"; };
                 netem = recvLink k;
               };
             }) recvKeys
@@ -672,11 +489,9 @@ let
     };
 
   allVariants = topo1Variants ++ topo2Variants ++ [ topo3Variant ];
-in
-lib.foldl' (
+in lib.foldl' (
   acc: v:
-  acc
-  // {
+  acc // {
     ${v.name} = nixnet.mkExperiment (v.mkCfg false);
     "${v.name}-tmux" = nixnet.mkExperiment (v.mkCfg true);
     "${v.name}-svg" = nixnet.mkMermaidSvg (v.mkCfg false);

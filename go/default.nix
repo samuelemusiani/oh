@@ -1,6 +1,9 @@
-{ pkgs }: pkgs.buildGoModule {
+{ pkgs, lib }: pkgs.buildGoModule {
   name = "The go implementation of OH";
-  src = ../.;
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../go;
+  };
   modRoot = "./go";
   goSum = ./go.sum;
   subPackages = [ "cmd" ];
