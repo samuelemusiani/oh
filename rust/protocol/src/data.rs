@@ -200,7 +200,7 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
     }
 }
 
-impl<'a, T: MerkleHash, E: Clone> IntoIterator for &'a MerkleTree<T, E> {
+impl<'a, T: MerkleHash, E> IntoIterator for &'a MerkleTree<T, E> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
 
