@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -128,8 +129,7 @@ func (s *Server) sendLoop() {
 		panic(s.fecEncoder.Run(s.sendDataCh, fecSend))
 	}()
 
-	s.sendingLimit.Store(100)                                          // Kbit/s
-	s.sendingLimit.Store(int64(float64(s.sendingLimit.Load()) * 1.06)) // for approximation errors
+	s.sendingLimit.Store(100) // Kbit/s
 
 	printDataRate := true
 	var printBytesSent atomic.Uint64
@@ -240,11 +240,12 @@ func (s *Server) sendLoop() {
 			}
 		case data := <-fecSend:
 			mtPassed := time.Since(lastReset).Microseconds()
-			if (bytesToSend+int64(len(data)))*8*1e3 > s.sendingLimit.Load()*mtPassed {
+			sendingLimit := int64(math.Floor(float64(s.sendingLimit.Load()) * 1.2)) // For approx errors
+			if (bytesToSend+int64(len(data)))*8*1e3 > sendingLimit*mtPassed {
 				s.limitedByRate.Store(true)
-				excessBits := (bytesToSend+int64(len(data)))*8*1e3 - s.sendingLimit.Load()*mtPassed
+				excessBits := (bytesToSend+int64(len(data)))*8*1e3 - sendingLimit*mtPassed
 				sendBatch()
-				timeToWait := time.Duration((excessBits)/s.sendingLimit.Load()) * time.Microsecond
+				timeToWait := time.Duration((excessBits)/sendingLimit) * time.Microsecond
 				time.Sleep(timeToWait)
 			} else {
 				s.limitedByRate.Store(false)
