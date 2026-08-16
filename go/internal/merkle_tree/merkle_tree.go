@@ -175,6 +175,9 @@ func (mt *MerkleTree) NextHashToQuery() ([]byte, bool) {
 		node := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
+		if int(node) >= len(mt.t) {
+			continue
+		}
 		n := mt.t[node]
 		if !n.valid {
 			// fmt.Println("node is invalid")
