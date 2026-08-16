@@ -702,15 +702,8 @@ func (f *xorFEC) Encode(block []packet.Message) ([]Packet, error) {
 		block = append(block, block[i])
 	}
 
-	fmt.Println("received block", len(block), "BlockSize", f.BlockSize(), "RepairCount", f.RepairCount())
 	result := make([]Packet, f.BlockSize()+f.RepairCount())
-	fmt.Print("result1: ")
-	for i := range result {
-		fmt.Print(len(result[i]), " ")
-	}
-	fmt.Println()
 	blockID := f.counter
-	fmt.Println("counter", f.counter)
 	for i, msg := range block {
 		var err error
 		result[i], err = f.encodeHeader(xorFECHeader{
@@ -729,12 +722,6 @@ func (f *xorFEC) Encode(block []packet.Message) ([]Packet, error) {
 		result[i] = append(result[i], pkt...)
 	}
 
-	fmt.Print("result2: ")
-	for i := range result {
-		fmt.Print(len(result[i]), " ")
-	}
-	fmt.Println()
-
 	// FEC
 	for i := range f.RepairCount() {
 		var err error
@@ -747,8 +734,6 @@ func (f *xorFEC) Encode(block []packet.Message) ([]Packet, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error encoding message: %w", err)
 		}
-
-		fmt.Println("pkt1", len(pkt1), "pkt2", len(pkt2))
 
 		result[i+f.BlockSize()], err = f.encodeHeader(xorFECHeader{
 			BlockID:   blockID,
@@ -768,12 +753,6 @@ func (f *xorFEC) Encode(block []packet.Message) ([]Packet, error) {
 		pkt := f.xor(pkt1, pkt2)
 		result[i+f.BlockSize()] = append(result[i+f.BlockSize()], pkt...)
 	}
-
-	fmt.Print("result3: ")
-	for i := range result {
-		fmt.Print(len(result[i]), " ")
-	}
-	fmt.Println()
 
 	f.counter++
 	return result, nil

@@ -209,6 +209,7 @@ func (c *Client) receiveLoop(bytesReceived *uint64) {
 			copyBuff := make([]byte, len(buff[i]))
 			*bytesReceived += uint64(len(buff[i]))
 			copy(copyBuff, buff[i])
+			c.addPacketReceivedByServerIP([16]byte(srcs[i].To16()))
 			tmpPacketBuff <- internal.PacketWithSrc{
 				Packet: copyBuff,
 				Src:    srcs[i],
@@ -232,8 +233,6 @@ func (c *Client) run() error {
 	for {
 		select {
 		case msg := <-c.receiveCh:
-			// fmt.Println("adding packet", "type", msg.MSG.Type(), "time", time.Now().UnixMicro(), "len", len(c.receiveCh))
-			c.addPacketReceivedByServerIP([16]byte(msg.Src.To16()))
 			err := c.handleMessage(msg)
 			if err != nil {
 				c.l["global"].Error("error handling message", "error", err)
