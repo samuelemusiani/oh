@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use log::{debug, info};
 use std::net::IpAddr;
 use std::path::PathBuf;

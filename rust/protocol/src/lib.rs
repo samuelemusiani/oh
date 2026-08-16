@@ -4,7 +4,7 @@ use tokio::fs::{File, ReadDir};
 use zerocopy::{IntoBytes, TryFromBytes};
 
 use crate::{
-    data::{FileMetadata, Metadata},
+    data::Metadata,
     error::OHProtocolError,
     packet::{
         AdvertisementPacket, DataPacket, FeedbackPacket, FeedbackRequestPacket, MerkleTreePacket, MetadataPacket, MetadataPacketData, Packet,

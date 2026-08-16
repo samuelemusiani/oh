@@ -1,7 +1,4 @@
-use crate::{
-    Hash,
-    packet::{AdvertisementPacket, Packet},
-};
+use crate::Hash;
 
 // Owned versions of the packet types, which own their data instead of borrowing it
 #[derive(Debug)]

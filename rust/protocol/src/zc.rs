@@ -11,7 +11,9 @@ pub(crate) enum PacketType {
     RequestLeaf,
     Data,
     MerkleTree,
+    #[allow(dead_code)]
     StreamPoll,
+    #[allow(dead_code)]
     StreamState,
     FeedbackRequest,
     Feedback = 9,

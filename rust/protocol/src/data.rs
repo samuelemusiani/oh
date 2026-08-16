@@ -12,7 +12,7 @@ use crate::{
     packet::{MetadataPacket, Packet},
 };
 
-const MAX_LEAF_DATA_SIZE: usize = u32::MAX as usize;
+//const MAX_LEAF_DATA_SIZE: usize = u32::MAX as usize;
 const TARGET_PAYLOAD_SIZE: usize = 1400;
 const PACKETS_PER_CHUNK: usize = 16;
 
@@ -333,6 +333,7 @@ mod tests {
         hash: Hash,
     }
     impl TestLeaf {
+        #[allow(dead_code)]
         fn new() -> Self {
             let hash = Sha256::digest(b"test");
             TestLeaf { hash: hash.try_into().unwrap() }
