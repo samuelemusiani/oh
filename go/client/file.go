@@ -46,6 +46,11 @@ type file struct {
 	// Channel to receive data packets for this file
 	dataChan chan *dataInChunk
 
+	// Received at least one data packet in the dataChan that was valid
+	// If this is true we can be sure that the chunkHandler is active and will
+	// re-request missing chunks. This is used in the scheduler
+	receivedAtLeastOne bool
+
 	// Because we cannot check if channel is closed :(
 	isFinished bool
 	finished   chan struct{}
@@ -151,8 +156,7 @@ type chunkInfo struct {
 	lastPacketIndex    uint32
 
 	// Timer to re-request missing packets for this chunk
-	reRequest   *time.Timer
-	lastTimeout time.Duration
+	reRequest *time.Timer
 }
 
 type chunkHandler struct {
@@ -314,7 +318,6 @@ func (ch *chunkHandler) addData(c *Client, data *dataInChunk) error {
 			reRequest: time.AfterFunc(timeoutPartialChunkRequest, func() {
 				ch.reRequest <- data.chunkID
 			}),
-			lastTimeout: timeoutPartialChunkRequest,
 		}
 		// Because the hash that we are receiving is a leaf hash, it has the
 		// depth (0) prepended to it
@@ -430,11 +433,10 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				// the last chunk block and we finish it (?).
 				panic("if timer has fired we must have the chunksInfo")
 			}
-			chInfo.lastTimeout = max(chInfo.lastTimeout*2, 10*timeoutPartialChunkRequest)
-			chInfo.reRequest.Reset(chInfo.lastTimeout) // TODO: maybe an exponential backoff would be better
+			chInfo.reRequest.Reset(timeoutPartialChunkRequest)
 			// We can request the chunk again, by hash :)
 
-			c.l["file"].Debug("timeout waiting for finishing chunk for file", "file_hash", htos(hf), "chunk_hash", htos(chInfo.hash))
+			c.l["file"].Error("timeout waiting for finishing chunk for file", "file_hash", htos(hf), "chunk_hash", htos(chInfo.hash))
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
@@ -444,7 +446,11 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	go func() {
 		for {
 			time.Sleep(1 * time.Second)
-			fmt.Println("progress", "progress", float64(cHandler.totalWritten)/float64(cHandler.totalSize)*100, len(cHandler.chunksToWrite))
+			var firstNeededChunk uint64
+			if len(cHandler.chunksToWrite) > 0 {
+				firstNeededChunk = uint64(cHandler.chunksToWrite[0]) - 1
+			}
+			fmt.Println("progress", "progress", float64(cHandler.totalWritten)/float64(cHandler.totalSize)*100, len(cHandler.chunksToWrite), firstNeededChunk)
 
 			if cHandler.totalWritten >= cHandler.totalSize {
 				return
@@ -490,7 +496,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 					break
 				}
 
-				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
+				c.l["file"].Error("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
 				go c.scheduler.requestLeafByIndex(hf, uint32(i))
 				leavesToRequest++
 				if leavesToRequest >= 8 {
@@ -504,6 +510,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 	for {
 		dataChunk := <-file.dataChan
+		file.receivedAtLeastOne = true
 		c.l["file"].Debug("received data packet for file", "file_hash", htos(hf))
 		c.l["file"].Debug("data info", "chunk_hash", htos(dataChunk.chunkHash), "chunk_id", dataChunk.chunkID, "packet_index", dataChunk.packetIndex)
 

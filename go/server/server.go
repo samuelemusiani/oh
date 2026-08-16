@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"math"
@@ -23,7 +24,7 @@ import (
 
 const (
 	advertisementInterval = 5 * time.Second
-	fecType               = internal.FECTypeXOR
+	fecType               = internal.FECTypeNull
 )
 
 type Server struct {
@@ -155,7 +156,7 @@ func (s *Server) sendLoop() {
 						// unit2 = "MB/s"
 					}
 					// s.l.Info("cc", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "rate2", fmt.Sprintf("%.2f %s", kbit/8, unit2), "avg batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
-					s.l.Info("cc", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "avg batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
+					s.l.Debug("cc", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "avg batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
 					batchSizeCount.Store(0)
 					batchSent.Store(0)
 					printBytesSent.Store(0)
@@ -205,11 +206,11 @@ func (s *Server) sendLoop() {
 			graphChan <- uint64(len(batch[i]))
 		}
 
-		// for i := range batch {
-		// 	if batch[i][1] == 4 {
-		// 		fmt.Println("type: ", batch[i][1], "chunk_id", binary.BigEndian.Uint32(batch[i][66:70]))
-		// 	}
-		// }
+		for i := range batch {
+			if batch[i][1] == 4 {
+				fmt.Println("type: ", batch[i][1], "chunk_id", binary.BigEndian.Uint32(batch[i][66:70]))
+			}
+		}
 
 		bytesToSend = 0
 		lastReset = time.Now()

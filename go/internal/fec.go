@@ -58,7 +58,6 @@ func (e *FECEncoder) Run(recv <-chan packet.Message, send chan<- Packet) error {
 	for {
 		select {
 		case <-ticker.C:
-			fmt.Println("FEC flushing timer")
 			err := flushBlock()
 			if err != nil {
 				e.l.Error("error flushing FEC block", "error", err)
@@ -252,8 +251,8 @@ func (d *FECDecoder) Run(recv <-chan PacketWithSrc, send chan<- packet.MessageWi
 
 			recovered, err := d.fec.Decode(pkts)
 			if err != nil {
-				d.l.Error("error decoding FEC block", "error", err, "blockID", blockID)
-				// delete(blockMap, blockID)
+				// d.l.Error("error decoding FEC block", "error", err, "blockID", blockID)
+				delete(blockMap, blockID)
 				continue
 			}
 

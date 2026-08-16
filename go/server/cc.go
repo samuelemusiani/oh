@@ -1,7 +1,6 @@
 package server
 
 import (
-	"fmt"
 	"math"
 	"net"
 	"slices"
@@ -31,7 +30,7 @@ func (s *Server) congestionControl() {
 		s.ccMutex.Unlock()
 
 		s.latestID++
-		s.l.Warn("sending feedback request packet", "id", s.latestID, "timeSpan", timeSpan, "nFeedbacks", nFeedbacks)
+		s.l.Debug("sending feedback request packet", "id", s.latestID, "timeSpan", timeSpan, "nFeedbacks", nFeedbacks)
 		p := FeedbackRequestPacket(s.latestID, timeSpan, nFeedbacks)
 		s.sendNowCh <- p
 
@@ -56,7 +55,7 @@ func (s *Server) congestionControl() {
 }
 
 func (s *Server) adjustRate(id uint16) {
-	s.l.Warn("adjusting rate")
+	s.l.Debug("adjusting rate")
 	s.ccMutex.Lock()
 	defer s.ccMutex.Unlock()
 
@@ -65,9 +64,9 @@ func (s *Server) adjustRate(id uint16) {
 	for client, feedback := range s.clientFeedbacks {
 		// avgLoss := feedback.lossSum / float64(feedback.samples)
 		avgLoss := avgLostWithMovingVector(feedback.vector, s.sentPacketsNumber)
-		s.l.Warn("feedback", "id", id, "client", net.IP(client[:]).String(), "avg_loss", avgLoss*100)
-		fmt.Println("feedback vector: ", feedback.vector)
-		fmt.Println("server vector:\t ", s.sentPacketsNumber)
+		s.l.Debug("feedback", "id", id, "client", net.IP(client[:]).String(), "avg_loss", avgLoss*100)
+		// fmt.Println("feedback vector: ", feedback.vector)
+		// fmt.Println("server vector:\t ", s.sentPacketsNumber)
 		allLosses = append(allLosses, avgLoss)
 	}
 
@@ -76,7 +75,7 @@ func (s *Server) adjustRate(id uint16) {
 			ll := s.sendingLimit.Swap(max(s.sendingLimit.Load()/2, 100))
 			s.lastLimitAtLoss.Store(ll)
 			s.lastLoss = time.Now()
-			fmt.Println("DECREASING RATE", s.sendingLimit.Load(), s.lastLimitAtLoss.Load())
+			// fmt.Println("DECREASING RATE", s.sendingLimit.Load(), s.lastLimitAtLoss.Load())
 		}
 		return
 	}
@@ -85,7 +84,7 @@ func (s *Server) adjustRate(id uint16) {
 	p := 90
 	index := min(int(math.Floor(float64(len(allLosses))*float64(p)/100)), len(allLosses))
 
-	fmt.Println("index", index, "allLosses[index]", allLosses[index])
+	// fmt.Println("index", index, "allLosses[index]", allLosses[index])
 	if allLosses[index] < 0.01 && s.limitedByRate.Load() {
 		// factor := 1 + 0.01*math.Pow(float64(time.Since(s.lastLoss))/1e9, 1.5)
 		// fmt.Println("factor", factor)
@@ -95,12 +94,12 @@ func (s *Server) adjustRate(id uint16) {
 		} else { // Cubic
 			s.sendingLimit.Store(int64(math.Floor(cubic(0.7, s.lastLimitAtLoss.Load(), s.lastLoss, 0.4))))
 		}
-		fmt.Println("INCREASING RATE", s.sendingLimit.Load())
+		// fmt.Println("INCREASING RATE", s.sendingLimit.Load())
 	} else if allLosses[index] > 0.05 {
 		ll := s.sendingLimit.Swap(max(s.sendingLimit.Load()/2, 100)) // TODO: probably we have to match beta
 		s.lastLimitAtLoss.Store(ll)
 		s.lastLoss = time.Now()
-		fmt.Println("DECREASING RATE", s.sendingLimit.Load(), s.lastLimitAtLoss.Load())
+		// fmt.Println("DECREASING RATE", s.sendingLimit.Load(), s.lastLimitAtLoss.Load())
 	}
 }
 
@@ -164,9 +163,9 @@ func avgLostWithMovingVector(a []uint16, b []uint64) float64 {
 }
 
 func cubic(beta float64, wMax int64, lastLoss time.Time, C float64) float64 {
-	fmt.Println("beta", beta, "wMax", wMax, "lastLoss", float64(time.Since(lastLoss).Milliseconds())/1e3, "C", C)
+	// fmt.Println("beta", beta, "wMax", wMax, "lastLoss", float64(time.Since(lastLoss).Milliseconds())/1e3, "C", C)
 	K := math.Pow((float64(wMax)*(1-beta))/C, 1.0/3.0)
 	tmp := C*math.Pow((float64(time.Since(lastLoss).Milliseconds())/1e3-K), 3.0) + float64(wMax)
-	fmt.Println("K", K, "tmp", tmp)
+	// fmt.Println("K", K, "tmp", tmp)
 	return tmp
 }
