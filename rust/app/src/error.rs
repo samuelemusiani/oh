@@ -5,9 +5,7 @@ pub enum AppError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Channel send error: {0}")]
-    ChannelSend(#[from] tokio::sync::mpsc::error::SendError<protocol::packet::Packet<'static>>),
-    #[error("Channel receive error: {0}")]
-    ChannelReceive(#[from] tokio::sync::mpsc::error::RecvError),
+    ChannelSend(#[from] tokio::sync::mpsc::error::SendError<protocol::packet_owned::PacketOwned>),
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 }

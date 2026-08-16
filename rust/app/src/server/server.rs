@@ -3,12 +3,10 @@ use std::sync::Arc;
 
 use log::{debug, error, info, trace};
 use protocol::packet::Packet;
+use protocol::packet_owned::PacketOwned;
 use tokio::{
     net::UdpSocket,
-    sync::{
-        Mutex,
-        mpsc::Receiver,
-    },
+    sync::{Mutex, mpsc::Receiver},
 };
 
 use crate::{
@@ -22,7 +20,7 @@ use crate::{
 pub struct Server {
     socket: UdpSocket,
     manifest: &'static protocol::data::ManifestTree,
-    packet_queue: Mutex<Receiver<Packet<'static>>>,
+    packet_queue: Mutex<Receiver<PacketOwned>>,
     multicast_addr: Ipv4Addr,
     multicast_port: u16,
     congestion_control: CongestionControl,
@@ -64,12 +62,14 @@ impl Server {
     }
 
     pub async fn run(self: Arc<Self>) -> Result<(), AppError> {
-        let client = self.clone();
-        tokio::task::spawn(async move { client.sender().await.unwrap() });
-        let client = self.clone();
-        tokio::task::spawn(async move { client.advertise().await.unwrap() });
-        let client = self.clone();
-        tokio::task::spawn(async move { client.congestion_control().await.unwrap() });
+        let server = self.clone();
+        tokio::task::spawn(async move { server.data_queue.worker().await.unwrap() });
+        let server = self.clone();
+        tokio::task::spawn(async move { server.sender().await.unwrap() });
+        let server = self.clone();
+        tokio::task::spawn(async move { server.advertise().await.unwrap() });
+        let server = self.clone();
+        tokio::task::spawn(async move { server.congestion_control().await.unwrap() });
         self.receiver().await
     }
 
@@ -149,7 +149,7 @@ impl Server {
         let mut packet_queue = self.packet_queue.lock().await;
         while let Some(packet) = packet_queue.recv().await {
             trace!("Sending packet: {:?}", packet);
-            let bytes = protocol::encode_packet(packet)?;
+            let bytes = protocol::encode_owned_packet(packet)?;
             trace!("Encoded packet to bytes: {:?}", bytes);
             self.socket.send_to(&bytes, (self.multicast_addr, self.multicast_port)).await?;
             self.congestion_control.add_packet();

@@ -58,6 +58,20 @@ impl MerkleNode {
             hashes
         }
     }
+    pub fn get_leaves(self: &Box<MerkleNode>) -> Vec<&Box<MerkleNode>> {
+        if self.is_leaf() {
+            vec![self]
+        } else {
+            let mut leaves = Vec::new();
+            if let Some(left) = &self.left {
+                leaves.extend(left.get_leaves());
+            }
+            if let Some(right) = &self.right {
+                leaves.extend(right.get_leaves());
+            }
+            leaves
+        }
+    }
     pub fn get_node_with_hash(self: &Box<MerkleNode>, hash: &Hash) -> Option<&Box<MerkleNode>> {
         if &self.hash == hash {
             return Some(self);
@@ -192,6 +206,14 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
         self.tree_node.get_nodes_at_depth(depth)
     }
 
+    pub fn get_leaf_from_node(&self, node: &Box<MerkleNode>) -> Option<&T> {
+        if node.is_leaf() {
+            self.leaves.iter().find(|leaf| leaf.merkle_hash() == node.hash)
+        } else {
+            None
+        }
+    }
+
     fn next_power_of_two(n: usize) -> usize {
         let mut n = n;
         if n <= 1 {
@@ -288,9 +310,9 @@ impl FileMetadata {
 pub struct DataLeaf {
     pub hash: Hash,
     // The offset of the leaf data in the original file
-    offset: u64,
+    pub offset: u64,
     // The length of the leaf data in the original file
-    length: u64,
+    pub length: u64,
 }
 
 impl MerkleHash for DataLeaf {

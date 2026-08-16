@@ -15,6 +15,7 @@ use crate::{
 pub mod data;
 pub mod error;
 pub mod packet;
+pub mod packet_owned;
 mod zc;
 
 // Type alias for a 256-bit hash
@@ -183,8 +184,6 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet<'_>, OHProtocolError> {
     }
 }
 
-//TODO: The alignment of some of the packets is broken, so we need to build them manually without relying on zerocopy.
-//TODO: Some packets have unknwon length arrays, we need to build them manually
 pub fn encode_packet(packet: Packet) -> Result<Vec<u8>, OHProtocolError> {
     match packet {
         Packet::Advertisement(advertisement_packet) => {
@@ -271,6 +270,94 @@ pub fn encode_packet(packet: Packet) -> Result<Vec<u8>, OHProtocolError> {
                 *feedback_packet.packet_index,
                 *feedback_packet.number_of_packets_received,
                 *feedback_packet.server_ip,
+            );
+            return Ok(zc_packet.as_bytes().to_vec());
+        }
+    }
+}
+
+pub fn encode_owned_packet(packet: packet_owned::PacketOwned) -> Result<Vec<u8>, OHProtocolError> {
+    match packet {
+        packet_owned::PacketOwned::Advertisement(advertisement_packet) => {
+            let zc_packet = zc::AdvertisementPacket::new(advertisement_packet.hash);
+            return Ok(zc_packet.as_bytes().to_vec());
+        }
+        packet_owned::PacketOwned::Metadata(metadata_packet) => {
+            let blob_type = match metadata_packet.data {
+                packet_owned::MetadataPacketDataOwned::FileMetadata { .. } => zc::BlobType::File,
+                packet_owned::MetadataPacketDataOwned::DirectoryMetadata { .. } => zc::BlobType::Directory,
+                packet_owned::MetadataPacketDataOwned::StreamMetadata { .. } => zc::BlobType::Stream,
+            };
+            let zc_packet_head =
+                zc::MetadataPacketHead::new(metadata_packet.manifest_hash, metadata_packet.data_hash, metadata_packet.extra_metadata_hash, blob_type);
+            match metadata_packet.data {
+                packet_owned::MetadataPacketDataOwned::FileMetadata { merkle_tree_depth, size_bits, size, name_length, name } => {
+                    let zc_file_metadata_1 = zc::FileMetadata_1::new(merkle_tree_depth, size_bits);
+                    // Can't build to structs because the size of the arrays is not known at compile time, so we have to build the bytes manually
+                    let packet_bytes = [zc_packet_head.as_bytes(), zc_file_metadata_1.as_bytes(), &size, &[name_length], &name].concat();
+                    return Ok(packet_bytes);
+                }
+                packet_owned::MetadataPacketDataOwned::StreamMetadata { .. } => {
+                    todo!("Streams will not be implemented in this version")
+                }
+                packet_owned::MetadataPacketDataOwned::DirectoryMetadata { .. } => {
+                    todo!("Sub directory metadata will not be implemented in this version")
+                }
+            }
+        }
+        packet_owned::PacketOwned::RequestLeaves(request_leaves_packet) => {
+            let zc_packet = zc::RequestLeavesPacket::new(request_leaves_packet.root_hash);
+            return Ok(zc_packet.as_bytes().to_vec());
+        }
+        packet_owned::PacketOwned::RequestLeaf(request_leaf_packet) => {
+            let zc_packet = zc::RequestLeafPacket::new(request_leaf_packet.root_hash, request_leaf_packet.index);
+            return Ok(zc_packet.as_bytes().to_vec());
+        }
+        packet_owned::PacketOwned::Data(data_packet) => {
+            let header = zc::PacketHeader { version: 1, packet_type: zc::PacketType::Data };
+            let packet_bytes = [
+                header.as_bytes(),
+                &data_packet.root_hash,
+                &data_packet.leaf_hash,
+                &data_packet.leaf_index.to_be_bytes(),
+                &data_packet.packet_index.to_be_bytes(),
+                0u16.to_be_bytes().as_ref(),
+                &data_packet.length.to_be_bytes(),
+                &data_packet.data,
+            ]
+            .concat();
+            return Ok(packet_bytes);
+        }
+        packet_owned::PacketOwned::MerkleTree(merkle_tree_packet) => {
+            let header = zc::PacketHeader { version: 1, packet_type: zc::PacketType::MerkleTree };
+            let packet_bytes = [
+                header.as_bytes(),
+                &merkle_tree_packet.root_hash,
+                0u8.to_be_bytes().as_ref(),
+                &merkle_tree_packet.merkle_tree_depth.to_be_bytes(),
+                &merkle_tree_packet.leaf_hashes.concat(),
+            ]
+            .concat();
+            return Ok(packet_bytes);
+        }
+        packet_owned::PacketOwned::FeedbackRequest(feedback_request_packet) => {
+            let header = zc::PacketHeader { version: 1, packet_type: zc::PacketType::FeedbackRequest };
+            let packet_bytes = [
+                header.as_bytes(),
+                &feedback_request_packet.request_id.to_be_bytes(),
+                0u8.to_be_bytes().as_ref(),
+                &feedback_request_packet.timespan.to_be_bytes(),
+                &feedback_request_packet.number_of_packets.to_be_bytes(),
+            ]
+            .concat();
+            return Ok(packet_bytes);
+        }
+        packet_owned::PacketOwned::Feedback(feedback_packet) => {
+            let zc_packet = zc::FeedbackPacket::new(
+                feedback_packet.request_id,
+                feedback_packet.packet_index,
+                feedback_packet.number_of_packets_received,
+                feedback_packet.server_ip,
             );
             return Ok(zc_packet.as_bytes().to_vec());
         }
