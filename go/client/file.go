@@ -185,7 +185,7 @@ type chunkHandler struct {
 	writtenChunks map[uint32]struct{}
 
 	// Slice of chunk IDs that we need to write to the file but we don't
-	// have the offset for yet. This can happen if we receive a chunk out of
+	// have the offset for them yet. This can happen if we receive a chunk out of
 	// order, and we need to wait for the previous chunks to be written first
 	// or re-request missing chunks
 	chunksToWrite []uint32
@@ -444,7 +444,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	go func() {
 		for {
 			time.Sleep(1 * time.Second)
-			fmt.Println("progress", "progress", float64(cHandler.totalWritten)/float64(cHandler.totalSize)*100)
+			fmt.Println("progress", "progress", float64(cHandler.totalWritten)/float64(cHandler.totalSize)*100, len(cHandler.chunksToWrite))
 
 			if cHandler.totalWritten >= cHandler.totalSize {
 				return

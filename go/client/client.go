@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	fecType = internal.FECTypeNull
+	fecType = internal.FECTypeXOR
 )
 
 var (
@@ -45,6 +45,7 @@ type Client struct {
 	config        oh.Config
 	multicastConn *internal.Multicast
 	fecDecoder    *internal.FECDecoder
+	fecEncoder    *internal.FECEncoder
 	chunker       *chunker.Chunker
 
 	// Directory to save files to
@@ -85,6 +86,7 @@ func New(c oh.Config) (*Client, error) {
 		config:        c,
 		multicastConn: m,
 		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), l["fec"]),
+		fecEncoder:    internal.NewFECEncoder(internal.NewFEC(fecType), l["fec"]),
 		chunker:       chunker.NewChunker(hashFunc),
 
 		metadataBuff: make(map[[32]byte][]*packet.Metadata),
@@ -127,7 +129,7 @@ func (c *Client) ReceiveFiles(dir string) error {
 func (c *Client) sendLoop(bytesSent *uint64) {
 	// Clients are not expected to send any FEC blocks, we can ignore the construction
 
-	batchSize := 1024
+	batchSize := 16
 	batch := make([][]byte, 0, batchSize)
 
 	sendBatch := func() {
@@ -149,15 +151,15 @@ func (c *Client) sendLoop(bytesSent *uint64) {
 	var leavesRequested atomic.Int64
 	var leafRequested atomic.Int64
 
-	go func() {
-		for {
-			// fmt.Println("Packets sent:", packetsSent.Load(), "leaves", leavesRequested.Load(), "leaf", leafRequested.Load())
-			packetsSent.Store(0)
-			leavesRequested.Store(0)
-			leafRequested.Store(0)
-			time.Sleep(1 * time.Second)
-		}
-	}()
+	// go func() {
+	// 	for {
+	// 		fmt.Println("Packets sent:", packetsSent.Load(), "leaves", leavesRequested.Load(), "leaf", leafRequested.Load())
+	// 		packetsSent.Store(0)
+	// 		leavesRequested.Store(0)
+	// 		leafRequested.Store(0)
+	// 		time.Sleep(1 * time.Second)
+	// 	}
+	// }()
 
 	for {
 		// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
@@ -169,7 +171,7 @@ func (c *Client) sendLoop(bytesSent *uint64) {
 			case packet.MessageTypeRequestLeaf:
 				leafRequested.Add(1)
 			}
-			data, err := packet.WritePacket(msg)
+			data, err := c.fecEncoder.EncodeIgnore(msg)
 			if err != nil {
 				c.l["send"].Error("error encoding message", "error", err)
 				continue

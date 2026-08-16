@@ -73,7 +73,7 @@ func (s *Server) adjustRate(id uint16) {
 
 	if len(allLosses) == 0 {
 		if s.latestID != 0 {
-			ll := s.sendingLimit.Swap(s.sendingLimit.Load() / 2)
+			ll := s.sendingLimit.Swap(max(s.sendingLimit.Load()/2, 100))
 			s.lastLimitAtLoss.Store(ll)
 			s.lastLoss = time.Now()
 			fmt.Println("DECREASING RATE", s.sendingLimit.Load(), s.lastLimitAtLoss.Load())
@@ -97,7 +97,7 @@ func (s *Server) adjustRate(id uint16) {
 		}
 		fmt.Println("INCREASING RATE", s.sendingLimit.Load())
 	} else if allLosses[index] > 0.05 {
-		ll := s.sendingLimit.Swap(s.sendingLimit.Load() / 2) // TODO: probably we have to match beta
+		ll := s.sendingLimit.Swap(max(s.sendingLimit.Load()/2, 100)) // TODO: probably we have to match beta
 		s.lastLimitAtLoss.Store(ll)
 		s.lastLoss = time.Now()
 		fmt.Println("DECREASING RATE", s.sendingLimit.Load(), s.lastLimitAtLoss.Load())

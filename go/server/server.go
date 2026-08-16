@@ -23,7 +23,7 @@ import (
 
 const (
 	advertisementInterval = 5 * time.Second
-	fecType               = internal.FECTypeNull
+	fecType               = internal.FECTypeXOR
 )
 
 type Server struct {
@@ -31,6 +31,7 @@ type Server struct {
 	multicastConn *internal.Multicast
 	chunker       *chunker.Chunker
 	fecEncoder    *internal.FECEncoder
+	fecDecoder    *internal.FECDecoder
 
 	files       []*file
 	filesHashes map[[32]byte]*file
@@ -89,6 +90,7 @@ func New(c oh.Config) (*Server, error) {
 		multicastConn: m,
 		chunker:       chunker.NewChunker(hashFunc),
 		fecEncoder:    internal.NewFECEncoder(internal.NewFEC(fecType), logger),
+		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), logger),
 
 		filesHashes: make(map[[32]byte]*file),
 		hashLookup:  make(map[[32]byte]*merkletree.MerkleTree),
@@ -223,7 +225,7 @@ func (s *Server) sendLoop() {
 	for {
 		select {
 		case p := <-s.sendNowCh:
-			pb, err := packet.WritePacket(p)
+			pb, err := s.fecEncoder.EncodeIgnore(p)
 			if err != nil {
 				s.l.Error("encoding packet", "error", err)
 
@@ -265,8 +267,11 @@ func (s *Server) sendLoop() {
 }
 
 func (s *Server) receiveLoop() {
-	// As a server we are not expecting to receive any FEC messages,
-	// so we can just ignore the re-construction of FEC blocks.
+	tmpPacketBuff := make(chan internal.PacketWithSrc)
+	go func() {
+		panic(s.fecDecoder.Run(tmpPacketBuff, s.receiveCh))
+	}()
+
 	buff := make([]byte, 65536)
 	for {
 		n, src, err := s.multicastConn.Receive(buff)
@@ -275,15 +280,12 @@ func (s *Server) receiveLoop() {
 			continue
 		}
 
-		msg, err := packet.ReadPacket(buff[:n])
-		if err != nil {
-			s.l.Error("error decoding message", "error", err)
-			continue
-		}
+		copyBuff := make([]byte, n)
+		copy(copyBuff, buff)
 
-		s.receiveCh <- packet.MessageWithSrc{
-			MSG: msg,
-			Src: src,
+		tmpPacketBuff <- internal.PacketWithSrc{
+			Packet: copyBuff,
+			Src:    src,
 		}
 	}
 }
