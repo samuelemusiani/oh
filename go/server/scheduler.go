@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,9 +15,9 @@ import (
 
 const (
 	maxConcurrentBigRequests   = 1
-	maxConcurrentSmallRequests = 2
+	maxConcurrentSmallRequests = 10
 
-	// These numbers should be adjusted based on the size of the leaves.
+	// These numbers should be adjusted based on the number of leaves.
 	// But they can be lowered to test merkle trees :)
 	maxLeavesForManifest = 1 << 31
 	maxLeavesForFiles    = 1 << 31
@@ -41,7 +42,7 @@ type request struct {
 
 // Request scheduler
 type scheduler struct {
-	// At the moment small requests are just 1 leaf, while big requests are
+	// TODO: At the moment small requests are just 1 leaf, while big requests are
 	// all the others. We might want to add medium requests that are leaves but
 	// maybe more than 1 leaf. Like during merkle sub-tree requests
 
@@ -63,9 +64,21 @@ type scheduler struct {
 
 	l *slog.Logger
 
-	// We probably don't need the full server pointer, but just some subfields.
+	// TODO: We probably don't need the full server pointer, but just some subfields.
 	// For now, we keep it simple and use the full pointer.
 	s *Server
+
+	// De-duplication of requests:
+	dedupLeavesRWMutex sync.RWMutex
+	dedupLeaves        map[packet.RequestLeaves]*schedulerDedup
+	dedupLeafRWMutex   sync.RWMutex
+	dedupLeaf          map[packet.RequestLeaf]*schedulerDedup
+}
+
+type schedulerDedup struct {
+	enqueued        time.Time
+	sending         bool
+	finishedSending time.Time
 }
 
 func newScheduler(s *Server) *scheduler {
@@ -87,22 +100,78 @@ func newScheduler(s *Server) *scheduler {
 		bigRequestsSemaphore:   make(chan struct{}, maxConcurrentBigRequests),
 		smallRequestsSemaphore: make(chan struct{}, maxConcurrentSmallRequests),
 
+		dedupLeaves: make(map[packet.RequestLeaves]*schedulerDedup),
+		dedupLeaf:   make(map[packet.RequestLeaf]*schedulerDedup),
+
 		l: logger.With("component", "scheduler"),
 		s: s,
 	}
 }
 
 func (s *scheduler) enqueueLeavesRequest(req *packet.RequestLeaves, src net.IP) {
+	fmt.Println("leaves request", htos(req.Hash))
+	s.dedupLeavesRWMutex.RLock()
+	dedup, ok := s.dedupLeaves[*req]
+	s.dedupLeavesRWMutex.RUnlock()
+	if ok {
+		fmt.Println("found in map", htos(req.Hash))
+		if dedup.sending {
+			fmt.Println("already sending", htos(req.Hash))
+			return
+		}
+		if time.Since(dedup.finishedSending).Seconds() < 10 {
+			fmt.Println("finishedSending < 10", htos(req.Hash))
+			return
+		}
+		if time.Since(dedup.enqueued).Seconds() < 15 {
+			fmt.Println("enqueued < 15", htos(req.Hash))
+			return
+		}
+	} else {
+		fmt.Println("NOT found in map", htos(req.Hash))
+		dedup = &schedulerDedup{}
+		s.dedupLeavesRWMutex.Lock()
+		s.dedupLeaves[*req] = dedup
+		s.dedupLeavesRWMutex.Unlock()
+	}
+
+	fmt.Println("leaves request SUCCEEDED")
+
 	select {
 	case s.leavesQueue <- leavesWithIP{r: req, ip: src}:
+		dedup.enqueued = time.Now()
 	default:
 		s.l.Debug("Leaves request queue is full, dropping request", "hash", htos(req.Hash))
 	}
 }
 
 func (s *scheduler) enqueueLeafRequest(req *packet.RequestLeaf, src net.IP) {
+	fmt.Println("leaf request")
+	s.dedupLeafRWMutex.RLock()
+	dedup, ok := s.dedupLeaf[*req]
+	s.dedupLeafRWMutex.RUnlock()
+	if ok {
+		if dedup.sending {
+			return
+		}
+		if time.Since(dedup.finishedSending).Seconds() < 10 {
+			return
+		}
+		if time.Since(dedup.enqueued).Seconds() < 15 {
+			return
+		}
+	} else {
+		dedup = &schedulerDedup{}
+		s.dedupLeafRWMutex.Lock()
+		s.dedupLeaf[*req] = dedup
+		s.dedupLeafRWMutex.Unlock()
+	}
+
+	fmt.Println("leaf request SUCCEEDED")
+
 	select {
 	case s.leafQueue <- leafWithIP{r: req, ip: src}:
+		dedup.enqueued = time.Now()
 	default:
 		s.l.Debug("Leaf request queue is full, dropping request", "hash", htos(req.RootHash))
 	}
@@ -125,6 +194,29 @@ func (s *scheduler) sortLeavesRequests() {
 			s.l.Debug("Received request packet for unknown hash", "hash", htos(r.r.Hash))
 
 			continue
+		}
+
+		setDedupSendingLeaves := func() {
+			s.dedupLeavesRWMutex.RLock()
+			dedup, ok := s.dedupLeaves[*r.r]
+			s.dedupLeavesRWMutex.RUnlock()
+			if !ok {
+				return
+			}
+
+			dedup.sending = true
+		}
+
+		setDedupStopSendingLeaves := func() {
+			s.dedupLeavesRWMutex.RLock()
+			dedup, ok := s.dedupLeaves[*r.r]
+			s.dedupLeavesRWMutex.RUnlock()
+			if !ok {
+				return
+			}
+
+			dedup.sending = false
+			dedup.finishedSending = time.Now()
 		}
 
 		switch {
@@ -163,12 +255,15 @@ func (s *scheduler) sortLeavesRequests() {
 				s.smallRequestQueue <- request{
 					t: time.Now(),
 					f: func() {
+						setDedupSendingLeaves()
+						defer setDedupStopSendingLeaves()
+
 						pkt, err := MerkleTreePacket(mt, r.r.Hash)
 						if err != nil {
 							s.l.Error("error creating merkle tree packet", "error", err)
 							return
 						}
-						s.s.sendCh <- pkt
+						s.s.sendDataCh <- pkt
 					},
 				}
 
@@ -184,6 +279,9 @@ func (s *scheduler) sortLeavesRequests() {
 			s.bigRequestQueue <- request{
 				t: time.Now(),
 				f: func() {
+					setDedupSendingLeaves()
+					defer setDedupStopSendingLeaves()
+
 					for _, i := range leavesIndexes {
 						if i >= uint32(len(s.s.files)) {
 							break
@@ -191,7 +289,7 @@ func (s *scheduler) sortLeavesRequests() {
 						// TODO: Based on the RFC, we should always put the manifest hash
 						// inside the metadata packet, even if the queried hash was a sub-tree.
 						// Probably we could have thought this better...
-						s.s.sendCh <- s.s.files[i].MetadataPacket([32]byte(mt.Root()))
+						s.s.sendDataCh <- s.s.files[i].MetadataPacket([32]byte(mt.Root()))
 					}
 					s.nBigRequests.Add(-1)
 				},
@@ -213,12 +311,15 @@ func (s *scheduler) sortLeavesRequests() {
 				s.smallRequestQueue <- request{
 					t: time.Now(),
 					f: func() {
+						setDedupSendingLeaves()
+						defer setDedupStopSendingLeaves()
+
 						pkt, err := MerkleTreePacket(mt, r.r.Hash)
 						if err != nil {
 							s.l.Error("error creating merkle tree packet", "error", err)
 							return
 						}
-						s.s.sendCh <- pkt
+						s.s.sendDataCh <- pkt
 					},
 				}
 
@@ -237,9 +338,12 @@ func (s *scheduler) sortLeavesRequests() {
 
 			// TODO: if leavesIndexes are not many we can probably classify this as
 			// a small request
-			s.bigRequestQueue <- request{
+			r := request{
 				t: time.Now(),
 				f: func() {
+					setDedupSendingLeaves()
+					defer setDedupStopSendingLeaves()
+
 					for _, i := range leavesIndexes {
 						if i >= uint32(len(file.chunks)) {
 							s.l.Debug("d3", "leavesIndexes", leavesIndexes, "len", len(file.chunks))
@@ -254,10 +358,15 @@ func (s *scheduler) sortLeavesRequests() {
 
 						s.l.Debug("Sending chunk packets for file", "file", file.name, "blob_index", i, "num_packets", len(pkts))
 						for _, pkt := range pkts {
-							s.s.sendCh <- &pkt
+							s.s.sendDataCh <- &pkt
 						}
 					}
 				},
+			}
+			if len(leavesIndexes) > 1 {
+				s.bigRequestQueue <- r
+			} else {
+				s.smallRequestQueue <- r
 			}
 		}
 	}
@@ -275,6 +384,29 @@ func (s *scheduler) handleLeafRequests() {
 			continue
 		}
 
+		setDedupSendingLeaf := func() {
+			s.dedupLeafRWMutex.RLock()
+			dedup, ok := s.dedupLeaf[*r.r]
+			s.dedupLeafRWMutex.RUnlock()
+			if !ok {
+				return
+			}
+
+			dedup.sending = true
+		}
+
+		setDedupStopSendingLeaf := func() {
+			s.dedupLeafRWMutex.RLock()
+			dedup, ok := s.dedupLeaf[*r.r]
+			s.dedupLeafRWMutex.RUnlock()
+			if !ok {
+				return
+			}
+
+			dedup.sending = false
+			dedup.finishedSending = time.Now()
+		}
+
 		switch {
 		// TODO: Maybe just check the pointers? In theory we only have 1 object in
 		// memeory for the merkle manifest tree
@@ -285,7 +417,10 @@ func (s *scheduler) handleLeafRequests() {
 			s.smallRequestQueue <- request{
 				t: time.Now(),
 				f: func() {
-					s.s.sendCh <- s.s.files[r.r.Index].MetadataPacket([32]byte(mt.Root()))
+					setDedupSendingLeaf()
+					defer setDedupStopSendingLeaf()
+
+					s.s.sendDataCh <- s.s.files[r.r.Index].MetadataPacket([32]byte(mt.Root()))
 				},
 			}
 		// In this case the default is for files. If streams were implemented then
@@ -301,13 +436,16 @@ func (s *scheduler) handleLeafRequests() {
 			s.smallRequestQueue <- request{
 				t: time.Now(),
 				f: func() {
+					setDedupSendingLeaf()
+					defer setDedupStopSendingLeaf()
+
 					pkts, err := file.ChunkPacket(r.r.Index)
 					if err != nil {
 						s.l.Error("error creating chunk packet", "file", file.name, "chunk_index", r.r.Index, "error", err)
 						return
 					}
 					for _, pkt := range pkts {
-						s.s.sendCh <- &pkt
+						s.s.sendDataCh <- &pkt
 					}
 				},
 			}
@@ -317,15 +455,18 @@ func (s *scheduler) handleLeafRequests() {
 
 func (s *scheduler) handleBigRequests() {
 	for req := range s.bigRequestQueue {
+		s.l.Debug("Trying to schedule big request")
+		s.bigRequestsSemaphore <- struct{}{}
+
 		if time.Since(req.t) > oldRequestTimeout {
+			<-s.bigRequestsSemaphore
 			s.l.Debug("Dropping old big request", "age", time.Since(req.t))
 			continue
 		}
-		s.l.Debug("Trying to schedule big request")
-		s.bigRequestsSemaphore <- struct{}{}
+
 		s.nBigRequests.Add(1)
 
-		s.l.Debug("BIG REQUEST SCHEDULED")
+		s.l.Error("BIG REQUEST SCHEDULED")
 		go func() {
 			defer func() {
 				<-s.bigRequestsSemaphore
@@ -338,12 +479,17 @@ func (s *scheduler) handleBigRequests() {
 
 func (s *scheduler) handleSmallRequests() {
 	for req := range s.smallRequestQueue {
+		s.smallRequestsSemaphore <- struct{}{}
+
 		if time.Since(req.t) > oldRequestTimeout {
+			<-s.smallRequestsSemaphore
 			s.l.Debug("Dropping old small request", "age", time.Since(req.t))
 			continue
 		}
-		s.smallRequestsSemaphore <- struct{}{}
+
 		s.nSmallRequests.Add(1)
+
+		s.l.Error("SMALL REQUEST SCHEDULED")
 		go func() {
 			defer func() {
 				<-s.smallRequestsSemaphore

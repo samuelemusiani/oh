@@ -20,7 +20,7 @@ type Feedback struct {
 	PacketIndex   uint16
 	NumberPackets uint16
 	// SHADOW: Reserved          uint16
-	ServerIP [128]byte
+	ServerIP [16]byte
 }
 
 func (f *FeedbackRequest) Type() messageType {

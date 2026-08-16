@@ -2,9 +2,12 @@ package server
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,7 +24,7 @@ import (
 
 const (
 	advertisementInterval = 5 * time.Second
-	fecType               = internal.FECTypeNull
+	fecType               = internal.FECTypeXOR
 )
 
 type Server struct {
@@ -29,6 +32,7 @@ type Server struct {
 	multicastConn *internal.Multicast
 	chunker       *chunker.Chunker
 	fecEncoder    *internal.FECEncoder
+	fecDecoder    *internal.FECDecoder
 
 	files       []*file
 	filesHashes map[[32]byte]*file
@@ -37,10 +41,23 @@ type Server struct {
 
 	currentManifest *merkletree.MerkleTree
 
-	sendCh    chan packet.Message
-	receiveCh chan packet.MessageWithSrc
+	sendDataCh chan packet.Message
+	sendNowCh  chan packet.Message
+	receiveCh  chan packet.MessageWithSrc
 
 	scheduler *scheduler
+
+	// No mutex for sendingLimit as it's on the hotpath
+	sendingLimit                atomic.Int64
+	ccMutex                     sync.Mutex
+	sentPacketsNumber           []uint64
+	sentPackets                 atomic.Uint64
+	clientFeedbacks             map[[16]byte]*clientFeedback
+	latestID                    uint16
+	lastLoss                    time.Time
+	lastLimitAtLoss             atomic.Int64
+	limitedByRate               atomic.Bool
+	feedbackRateAdjustmentTimer *time.Timer
 
 	l *slog.Logger
 }
@@ -74,12 +91,17 @@ func New(c oh.Config) (*Server, error) {
 		multicastConn: m,
 		chunker:       chunker.NewChunker(hashFunc),
 		fecEncoder:    internal.NewFECEncoder(internal.NewFEC(fecType), logger),
+		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), logger),
 
 		filesHashes: make(map[[32]byte]*file),
 		hashLookup:  make(map[[32]byte]*merkletree.MerkleTree),
 
-		sendCh:    make(chan packet.Message, 1024*1024),
-		receiveCh: make(chan packet.MessageWithSrc, 1024*1024),
+		sendDataCh: make(chan packet.Message, 8),
+		sendNowCh:  make(chan packet.Message, 32),
+		receiveCh:  make(chan packet.MessageWithSrc, 1024),
+
+		clientFeedbacks: make(map[[16]byte]*clientFeedback),
+		lastLoss:        time.Now(),
 
 		l: logger,
 	}
@@ -105,15 +127,13 @@ func (s *Server) SendFiles(files []string) error {
 }
 
 func (s *Server) sendLoop() {
-	fecSend := make(chan internal.Packet, 1024*1024)
+	fecSend := make(chan internal.Packet, 8)
 	go func() {
 		// TODO: check for errors and handle them properly
-		panic(s.fecEncoder.Run(s.sendCh, fecSend))
+		panic(s.fecEncoder.Run(s.sendDataCh, fecSend))
 	}()
 
-	// TODO: This is limited because client cannot keep up
-	rateLimit := int64(800)                      // MB/s
-	rateLimit = int64(float64(rateLimit) * 1.06) // for approximation errors
+	s.sendingLimit.Store(100) // Kbit/s
 
 	printDataRate := true
 	var printBytesSent atomic.Uint64
@@ -122,14 +142,21 @@ func (s *Server) sendLoop() {
 	var batchSent atomic.Int64
 
 	if printDataRate {
-		intervalDatarate := 500 // ms
+		intervalDatarate := 1000 // ms
 		lastReset := time.Now()
 		go func() {
 			for {
 				if time.Since(lastReset) > time.Duration(intervalDatarate)*time.Millisecond {
-					mbit := float64(printBytesSent.Load()) / (1024 * 1024 * (float64(intervalDatarate) / 1000)) * 8
-					s.l.Info("data rate", "rate", fmt.Sprintf("%.2f Mbit/s", mbit), "rate2", fmt.Sprintf("%.2f MB/s", mbit/8))
-					s.l.Info("batch stats", "average batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
+					kbit := float64(printBytesSent.Load()) / (1024 * (float64(intervalDatarate) / 1000)) * 8
+					unit1 := "Kbit/s"
+					// unit2 := "KB/s"
+					if kbit > 1500 {
+						kbit = kbit / 1024
+						unit1 = "Mbit/s"
+						// unit2 = "MB/s"
+					}
+					// s.l.Info("cc", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "rate2", fmt.Sprintf("%.2f %s", kbit/8, unit2), "avg batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
+					s.l.Debug("cc", "rate", fmt.Sprintf("%.2f %s", kbit, unit1), "avg batch size", float64(batchSizeCount.Load())/float64(batchSent.Load()), "batches sent", batchSent.Load())
 					batchSizeCount.Store(0)
 					batchSent.Store(0)
 					printBytesSent.Store(0)
@@ -144,37 +171,53 @@ func (s *Server) sendLoop() {
 	lastReset := time.Now()
 	// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
 
-	batchSize := 1
-	batch := make([][]byte, 0, batchSize)
+	// ------------- GRAPH -------------------
+	graphChan := make(chan uint64, 1024*1024)
+	go func() {
+		path := "s_graph"
+		f, err := os.Create(path)
+		if err != nil {
+			panic(fmt.Sprintf("could not open file %s: %s", path, err.Error()))
+		}
 
-	maxBatchesSent := 0
+		for {
+			value := <-graphChan
+			_, err := f.Write(fmt.Appendf(nil, "%d %d %d\n", time.Now().UnixNano(), value, s.sendingLimit.Load()))
+			if err != nil {
+				panic(fmt.Sprintf("could not write to file %s: %s", path, err.Error()))
+			}
+		}
+	}()
+	// ------------- GRAPH -------------------
+
+	batchSize := 16
+	batch := make([][]byte, 0, batchSize)
 
 	sendBatch := func() {
 		if len(batch) == 0 {
 			return
 		}
+		s.sentPackets.Add(uint64(len(batch)))
 		batchSizeCount.Add(int64(len(batch)))
 		batchSent.Add(1)
 
 		for i := range batch {
 			printBytesSent.Add(uint64(len(batch[i])))
+			graphChan <- uint64(len(batch[i]))
+		}
+
+		for i := range batch {
+			if batch[i][1] == 4 {
+				fmt.Println("type: ", batch[i][1], "chunk_id", binary.BigEndian.Uint32(batch[i][66:70]))
+			}
 		}
 
 		bytesToSend = 0
 		lastReset = time.Now()
+		// fmt.Println("sent packet", "time", time.Now().UnixMicro())
 		err := s.multicastConn.SendBatch(batch)
 		if err != nil {
 			s.l.Error("error sending batch", "error", err)
-		}
-
-		// TODO: remove when we'll have a congestion control
-		if len(batch) >= batchSize {
-			maxBatchesSent++
-			if maxBatchesSent > 16 {
-				maxBatchesSent = 0
-				batchSize *= 2
-				batch = make([][]byte, 0, batchSize)
-			}
 		}
 
 		batch = batch[:0]
@@ -182,16 +225,34 @@ func (s *Server) sendLoop() {
 
 	for {
 		select {
+		case p := <-s.sendNowCh:
+			pb, err := s.fecEncoder.EncodeIgnore(p)
+			if err != nil {
+				s.l.Error("encoding packet", "error", err)
+
+				continue
+			}
+
+			// Don't count the feedback request
+			if p.Type() != packet.MessageTypeFeedbackRequest {
+				sendBatch()
+				s.sentPackets.Add(1)
+			}
+			err = s.multicastConn.Send(pb)
+			if err != nil {
+				s.l.Error("sending packet", "error", err)
+			}
 		case data := <-fecSend:
 			mtPassed := time.Since(lastReset).Microseconds()
-			// Becuase we are using microseconds, we should count the 1e6 factor. But also we are measuring in
-			// Mega Bytes, so we should count the 1024*1024 factor. Becuase 1e6 ~= 1024*1024, we can just ignore
-			// the factors and use everything as is. This will result in a slightly lower rate than the
-			// specified rateLimit, but it is good enough for our purposes.
-			if (bytesToSend+int64(len(data)))*8 > rateLimit*mtPassed {
+			sendingLimit := int64(math.Floor(float64(s.sendingLimit.Load()) * 1.2)) // For approx errors
+			if (bytesToSend+int64(len(data)))*8*1e3 > sendingLimit*mtPassed {
+				s.limitedByRate.Store(true)
+				excessBits := (bytesToSend+int64(len(data)))*8*1e3 - sendingLimit*mtPassed
 				sendBatch()
-				timeToWait := time.Duration(((bytesToSend+int64(len(data)))*8-rateLimit*mtPassed)*8/rateLimit) * time.Microsecond
+				timeToWait := time.Duration((excessBits)/sendingLimit) * time.Microsecond
 				time.Sleep(timeToWait)
+			} else {
+				s.limitedByRate.Store(false)
 			}
 
 			bytesToSend += int64(len(data))
@@ -207,8 +268,11 @@ func (s *Server) sendLoop() {
 }
 
 func (s *Server) receiveLoop() {
-	// As a server we are not expecting to receive any FEC messages,
-	// so we can just ignore the re-construction of FEC blocks.
+	tmpPacketBuff := make(chan internal.PacketWithSrc)
+	go func() {
+		panic(s.fecDecoder.Run(tmpPacketBuff, s.receiveCh))
+	}()
+
 	buff := make([]byte, 65536)
 	for {
 		n, src, err := s.multicastConn.Receive(buff)
@@ -217,15 +281,12 @@ func (s *Server) receiveLoop() {
 			continue
 		}
 
-		msg, err := packet.ReadPacket(buff[:n])
-		if err != nil {
-			s.l.Error("error decoding message", "error", err)
-			continue
-		}
+		copyBuff := make([]byte, n)
+		copy(copyBuff, buff)
 
-		s.receiveCh <- packet.MessageWithSrc{
-			MSG: msg,
-			Src: src,
+		tmpPacketBuff <- internal.PacketWithSrc{
+			Packet: copyBuff,
+			Src:    src,
 		}
 	}
 }
@@ -234,6 +295,7 @@ func (s *Server) run() error {
 	go s.scheduler.run()
 	go s.sendLoop()
 	go s.receiveLoop()
+	go s.congestionControl()
 
 	advertisementTicker := time.NewTicker(advertisementInterval)
 
@@ -242,7 +304,7 @@ func (s *Server) run() error {
 	if err != nil {
 		return fmt.Errorf("error creating advertisement packet: %w", err)
 	}
-	s.sendCh <- adv
+	s.sendDataCh <- adv
 
 	for {
 		select {
@@ -253,7 +315,7 @@ func (s *Server) run() error {
 
 				continue
 			}
-			s.sendCh <- adv
+			s.sendNowCh <- adv
 
 		case msg := <-s.receiveCh:
 			err := s.handleMessage(msg)
@@ -271,32 +333,38 @@ func (s *Server) handleMessage(msg packet.MessageWithSrc) error {
 	case packet.MessageTypeAdvertisement:
 		adv, ok := msg.MSG.(*packet.Advertisement)
 		if !ok {
-			panic("message type is advertisement but message is not of type *packet.Advertisement")
+			panic("message type is not of type Advertisement")
 		}
 
 		h := htos(adv.Hash)
 		s.l.Debug("Received advertisement packet", "src", msg.Src, "hash", h)
-		return nil
 	case packet.MessageTypeMetadata:
 		s.l.Debug("Received metadata packet")
-		return nil
 	case packet.MessageTypeRequestLeaves:
 		req, ok := msg.MSG.(*packet.RequestLeaves)
 		if !ok {
-			panic("message type is request but message is not of type *packet.Request")
+			panic("message type is not of type RequestLeaves")
 		}
 		s.scheduler.enqueueLeavesRequest(req, msg.Src)
-		return nil
 
 	case packet.MessageTypeRequestLeaf:
 		req, ok := msg.MSG.(*packet.RequestLeaf)
 		if !ok {
-			panic("message type is request but message is not of type *packet.Request")
+			panic("message type is not of type RequestLeaf")
 		}
 		s.scheduler.enqueueLeafRequest(req, msg.Src)
-		return nil
+
+	case packet.MessageTypeFeedback:
+		f, ok := msg.MSG.(*packet.Feedback)
+		if !ok {
+			panic("message is not of type Feedback")
+		}
+
+		s.handleFeedback(f, msg.Src)
 
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
+
+	return nil
 }

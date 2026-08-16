@@ -182,90 +182,11 @@ func (s *scheduler) requestFile(h [32]byte) {
 	}
 }
 
-func (s *scheduler) requestor(toRequest chan [32]byte, requestorChan chan [32]byte, completeChan chan [32]byte, merkleTreeChan chan schedulerMerkleTreeMessage, checkFinish chan struct{}, finish chan bool) {
-	reRequestTime := 5 * time.Second
-	timer := time.NewTimer(1 * time.Second) // Set to max duration
-	timer.Stop()                            // Stop the timer initially
-
-	var currentHash *[32]byte
-	hashesToRequest := make([][32]byte, 0)
-
-	atLeastOneRequest := false
-
-	for {
-		select {
-		case h := <-toRequest:
-			atLeastOneRequest = true
-			if currentHash != nil {
-				s.client.l["scheduler"].Info("Adding hash to queue", "hash", htos(h))
-				hashesToRequest = append(hashesToRequest, h)
-				continue
-			}
-			// Need to request hash
-			currentHash = &h
-			s.client.l["scheduler"].Info("Requesting hash", "hash", htos(h))
-			s.client.sendCh <- s.client.RequestLeavesPacket(h)
-			timer.Reset(reRequestTime)
-
-		case h := <-requestorChan:
-			if currentHash != nil && *currentHash == h {
-				// Received a packet for the current hash, reset the timer
-				timer.Reset(reRequestTime)
-			}
-			// If the hash is not the current one, we can ignore it since we are
-			// not requesting it
-
-		case h := <-completeChan:
-			s.client.l["scheduler"].Info("Received complete signal for hash", "hash", htos(h))
-			if currentHash != nil && *currentHash == h {
-				s.client.l["scheduler"].Info("Finished receiving hash", "hash", htos(h))
-				// Finished receiving the current hash, move to the next one
-				currentHash = nil
-				if len(hashesToRequest) > 0 {
-					currentHash = &hashesToRequest[0]
-					hashesToRequest = hashesToRequest[1:]
-					s.client.l["scheduler"].Info("Requesting next hash", "hash", htos(*currentHash))
-					s.client.sendCh <- s.client.RequestLeavesPacket(*currentHash)
-					timer.Reset(reRequestTime)
-				} else {
-					timer.Stop()
-				}
-			} else if indx := slices.Index(hashesToRequest, h); indx != -1 {
-				s.client.l["scheduler"].Info("Removing hash from queue", "hash", htos(h))
-				// Remove the hash from the queue
-				hashesToRequest = slices.Delete(hashesToRequest, indx, indx+1)
-			} else {
-				s.client.l["scheduler"].Info("Received complete signal for unknown hash", "hash", htos(h))
-			}
-		case msg := <-merkleTreeChan:
-			if msg.rootHash != *currentHash {
-				s.client.l["scheduler"].Error("Received merkle tree for unknown hash", "hash", htos(msg.rootHash))
-				continue
-			}
-		case <-timer.C:
-			if currentHash != nil {
-				// Re-request the current hash
-				s.client.sendCh <- s.client.RequestLeavesPacket(*currentHash)
-				timer.Reset(reRequestTime)
-			}
-
-		case <-checkFinish:
-			if currentHash != nil || len(hashesToRequest) > 0 || !atLeastOneRequest {
-				finish <- false
-				continue
-			}
-			s.client.l["scheduler"].Info("No more hashes to request, finishing")
-			finish <- true
-			return
-		}
-	}
-}
-
 // This is very similar to a requestor, but is based on a merkle tree.
 func (s *scheduler) mtRequestor(toRequest chan *merkletree.MerkleTree, requestorChan chan [32]byte, completeChan chan [32]byte, merkleTreeChan chan schedulerMerkleTreeMessage, checkFinish chan struct{}, finish chan bool) {
-	reRequestTime := 5 * time.Second
-	timer := time.NewTimer(1 * time.Second) // Set to max duration
-	timer.Stop()                            // Stop the timer initially
+	reRequestTime := 30 * time.Second
+	timer := time.NewTimer(0)
+	timer.Stop() // Stop the timer initially
 
 	guessedHeights := make(map[[32]byte]bool)
 
@@ -341,27 +262,6 @@ func (s *scheduler) mtRequestor(toRequest chan *merkletree.MerkleTree, requestor
 				s.client.l["scheduler"].Info("Finished receiving hash", "hash", htos(h))
 				// Finished receiving the current hash, move to the next one
 				queryNextHashOrAdvance()
-				// h, ok := currentMT.NextHashToQuery()
-				// if !ok {
-				// 	if len(mtsToRequest) > 0 {
-				// 		currentMT = mtsToRequest[0]
-				// 		mtsToRequest = mtsToRequest[1:]
-				// 		h, ok = currentMT.NextHashToQuery()
-				// 		if !ok {
-				// 			panic("no hash to query") // Is this possible?
-				// 		}
-				// 	} else {
-				// 		timer.Stop()
-				// 		currentHash = nil
-				// 		currentMT = nil
-				//
-				// 		continue
-				// 	}
-				// }
-				// currentHash = (*[32]byte)(h)
-				// s.client.l["scheduler"].Info("Requesting next hash", "hash", htos(*currentHash))
-				// s.client.sendCh <- s.client.RequestLeavesPacket(*currentHash)
-				// timer.Reset(reRequestTime)
 
 			} else if indx := slices.IndexFunc(mtsToRequest, func(mt *merkletree.MerkleTree) bool { return [32]byte(mt.Root()) == h }); indx != -1 { // TODO: Does this make sens to have
 				s.client.l["scheduler"].Info("Removing hash from queue", "hash", htos(h))
@@ -436,39 +336,54 @@ func (s *scheduler) mtRequestor(toRequest chan *merkletree.MerkleTree, requestor
 			queryNextHashOrAdvance()
 
 		case <-timer.C:
-			if currentMT != nil {
-				h, ok := currentMT.NextHashToQuery()
-				if !ok {
-					if !s.client.filesMap[[32]byte(currentMT.Root())].isFinished {
-						panic("no hash to query and file is not complete")
-					}
-					// file is complete
-
-					if len(mtsToRequest) > 0 {
-						currentMT = mtsToRequest[0]
-						mtsToRequest = mtsToRequest[1:]
-						h, ok = currentMT.NextHashToQuery()
-						if !ok {
-							panic("no hash to query") // Is this possible?
-						}
-					} else {
-						timer.Stop()
-						currentHash = nil
-						currentMT = nil
-
-						continue
-					}
-				}
-
-				if currentHash != (*[32]byte)(h) {
-					currentHash = (*[32]byte)(h) // TODO: maybe we can just assign?
-				}
-
-				// Re-request the current hash
-				s.client.l["scheduler"].Info("re-requesting next hash from TIMER branch", "hash", htos(*currentHash))
-				s.client.sendCh <- s.client.RequestLeavesPacket(*currentHash)
-				timer.Reset(reRequestTime)
+			if currentMT == nil {
+				continue
 			}
+
+			h, ok := currentMT.NextHashToQuery()
+			if !ok {
+				if !s.client.filesMap[[32]byte(currentMT.Root())].isFinished {
+					panic("no hash to query and file is not complete")
+				}
+				// file is complete
+
+				if len(mtsToRequest) > 0 {
+					currentMT = mtsToRequest[0]
+					mtsToRequest = mtsToRequest[1:]
+					h, ok = currentMT.NextHashToQuery()
+					if !ok {
+						panic("no hash to query") // Is this possible?
+					}
+				} else {
+					timer.Stop()
+					currentHash = nil
+					currentMT = nil
+
+					continue
+				}
+			}
+
+			if currentHash != (*[32]byte)(h) {
+				currentHash = (*[32]byte)(h) // TODO: maybe we can just assign?
+			}
+
+			// This branch is needed when we already requested a file, but the server
+			// decided to server another request. The file that we requests so didn't
+			// get send. If the server sends our file, this branch is no more needed
+			// as the chunkHandler already takes care of re-requesting missing chunks
+			// in the file. So it does not make sens to re-request the entire file just
+			// becuase we are missing some chunks.
+			s.client.filesMapMutex.Lock()
+			file, ok := s.client.filesMap[[32]byte(currentMT.Root())]
+			s.client.filesMapMutex.Unlock()
+			if ok && file.receivedAtLeastOne {
+				continue
+			}
+
+			// Re-request the current hash
+			s.client.l["scheduler"].Info("re-requesting next hash from TIMER branch", "hash", htos(*currentHash))
+			s.client.sendCh <- s.client.RequestLeavesPacket(*currentHash)
+			timer.Reset(reRequestTime)
 
 		case <-checkFinish:
 			if currentMT != nil || len(mtsToRequest) > 0 || !atLeastOneRequest {

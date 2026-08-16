@@ -3,8 +3,6 @@ package client
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,7 +22,7 @@ import (
 )
 
 const (
-	fecType = internal.FECTypeNull
+	fecType = internal.FECTypeXOR
 )
 
 var (
@@ -47,6 +45,7 @@ type Client struct {
 	config        oh.Config
 	multicastConn *internal.Multicast
 	fecDecoder    *internal.FECDecoder
+	fecEncoder    *internal.FECEncoder
 	chunker       *chunker.Chunker
 
 	// Directory to save files to
@@ -62,6 +61,8 @@ type Client struct {
 
 	sendCh    chan packet.Message
 	receiveCh chan packet.MessageWithSrc
+
+	cc cc
 
 	scheduler *scheduler
 
@@ -85,6 +86,7 @@ func New(c oh.Config) (*Client, error) {
 		config:        c,
 		multicastConn: m,
 		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), l["fec"]),
+		fecEncoder:    internal.NewFECEncoder(internal.NewFEC(fecType), l["fec"]),
 		chunker:       chunker.NewChunker(hashFunc),
 
 		metadataBuff: make(map[[32]byte][]*packet.Metadata),
@@ -98,6 +100,7 @@ func New(c oh.Config) (*Client, error) {
 	}
 
 	client.scheduler = newScheduler(client)
+	client.initCC()
 
 	return client, nil
 }
@@ -126,7 +129,7 @@ func (c *Client) ReceiveFiles(dir string) error {
 func (c *Client) sendLoop(bytesSent *uint64) {
 	// Clients are not expected to send any FEC blocks, we can ignore the construction
 
-	batchSize := 1024
+	batchSize := 16
 	batch := make([][]byte, 0, batchSize)
 
 	sendBatch := func() {
@@ -148,15 +151,15 @@ func (c *Client) sendLoop(bytesSent *uint64) {
 	var leavesRequested atomic.Int64
 	var leafRequested atomic.Int64
 
-	go func() {
-		for {
-			fmt.Println("Packets sent:", packetsSent.Load(), "leaves", leavesRequested.Load(), "leaf", leafRequested.Load())
-			packetsSent.Store(0)
-			leavesRequested.Store(0)
-			leafRequested.Store(0)
-			time.Sleep(1 * time.Second)
-		}
-	}()
+	// go func() {
+	// 	for {
+	// 		fmt.Println("Packets sent:", packetsSent.Load(), "leaves", leavesRequested.Load(), "leaf", leafRequested.Load())
+	// 		packetsSent.Store(0)
+	// 		leavesRequested.Store(0)
+	// 		leafRequested.Store(0)
+	// 		time.Sleep(1 * time.Second)
+	// 	}
+	// }()
 
 	for {
 		// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
@@ -168,7 +171,7 @@ func (c *Client) sendLoop(bytesSent *uint64) {
 			case packet.MessageTypeRequestLeaf:
 				leafRequested.Add(1)
 			}
-			data, err := packet.WritePacket(msg)
+			data, err := c.fecEncoder.EncodeIgnore(msg)
 			if err != nil {
 				c.l["send"].Error("error encoding message", "error", err)
 				continue
@@ -206,6 +209,7 @@ func (c *Client) receiveLoop(bytesReceived *uint64) {
 			copyBuff := make([]byte, len(buff[i]))
 			*bytesReceived += uint64(len(buff[i]))
 			copy(copyBuff, buff[i])
+			c.addPacketReceivedByServerIP([16]byte(srcs[i].To16()))
 			tmpPacketBuff <- internal.PacketWithSrc{
 				Packet: copyBuff,
 				Src:    srcs[i],
@@ -253,34 +257,34 @@ func (c *Client) run() error {
 
 			c.l["global"].Info("All files received, exiting")
 
-			totalBytesForFiles := uint64(0)
-			c.filesMapMutex.Lock()
-			for _, f := range c.filesMap {
-				fData := fileDataFromMetadata(f.metadata)
-				totalBytesForFiles += binary.NativeEndian.Uint64(fData.Size)
-				totalBytesForFiles += uint64(len(fData.Name))
-			}
-
-			c.filesMapMutex.Unlock()
-			ov := struct {
-				BytesReceived      uint64  `json:"bytes_received"`
-				BytesSent          uint64  `json:"bytes_sent"`
-				TotalBytesForFiles uint64  `json:"total_bytes_for_files"`
-				Overhead           float64 `json:"overhead"`
-			}{
-				BytesReceived:      bytesReceived,
-				BytesSent:          bytesSent,
-				TotalBytesForFiles: totalBytesForFiles,
-				Overhead:           float64(bytesReceived+bytesSent-totalBytesForFiles) / float64(totalBytesForFiles) * 100,
-			}
-
-			m, err := json.MarshalIndent(ov, "", "\t")
-			if err != nil {
-				panic("could not marshal struct")
-			}
-			fmt.Println("------------ OVERHEAD START ------------")
-			fmt.Println(string(m))
-			fmt.Println("------------ OVERHEAD END ------------")
+			// totalBytesForFiles := uint64(0)
+			// c.filesMapMutex.Lock()
+			// for _, f := range c.filesMap {
+			// 	fData := fileDataFromMetadata(f.metadata)
+			// 	totalBytesForFiles += binary.NativeEndian.Uint64(fData.Size)
+			// 	totalBytesForFiles += uint64(len(fData.Name))
+			// }
+			//
+			// c.filesMapMutex.Unlock()
+			// ov := struct {
+			// 	BytesReceived      uint64  `json:"bytes_received"`
+			// 	BytesSent          uint64  `json:"bytes_sent"`
+			// 	TotalBytesForFiles uint64  `json:"total_bytes_for_files"`
+			// 	Overhead           float64 `json:"overhead"`
+			// }{
+			// 	BytesReceived:      bytesReceived,
+			// 	BytesSent:          bytesSent,
+			// 	TotalBytesForFiles: totalBytesForFiles,
+			// 	Overhead:           float64(bytesReceived+bytesSent-totalBytesForFiles) / float64(totalBytesForFiles) * 100,
+			// }
+			//
+			// m, err := json.MarshalIndent(ov, "", "\t")
+			// if err != nil {
+			// 	panic("could not marshal struct")
+			// }
+			// fmt.Println("------------ OVERHEAD START ------------")
+			// fmt.Println(string(m))
+			// fmt.Println("------------ OVERHEAD END ------------")
 
 			return nil
 		}
@@ -369,6 +373,15 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 			}
 		}()
 
+	case packet.MessageTypeFeedbackRequest:
+		pkt := msg.MSG.(*packet.FeedbackRequest)
+		c.l["mhandler"].Info("Received feedback request packet", "id", pkt.RequestID, "timespan", pkt.Timespan, "number", pkt.NumberOfFeedbacks, "src", msg.Src.String())
+
+		c.handleFeedbackRequest(pkt, msg.Src)
+
+	case packet.MessageTypeRequestLeaves, packet.MessageTypeRequestLeaf, packet.MessageTypeFeedback:
+	// Do nothing
+
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
@@ -400,6 +413,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"file":      {},
 		"request":   {},
 		"scheduler": {},
+		"cc":        {},
 	}
 
 	loggers := map[string]*slog.Logger{
@@ -412,6 +426,7 @@ func makeLoggers() map[string]*slog.Logger {
 		"file":      makeLogger("file", levels["file"]),
 		"request":   makeLogger("request", levels["request"]),
 		"scheduler": makeLogger("scheduler", levels["scheduler"]),
+		"cc":        makeLogger("cc", levels["cc"]),
 	}
 
 	// Change level at any time, takes effect immediately:
@@ -424,6 +439,7 @@ func makeLoggers() map[string]*slog.Logger {
 	levels["file"].Set(slog.LevelInfo)
 	levels["request"].Set(slog.LevelInfo)
 	levels["scheduler"].Set(slog.LevelWarn)
+	levels["cc"].Set(slog.LevelDebug)
 
 	return loggers
 }

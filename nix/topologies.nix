@@ -24,7 +24,7 @@ let
   testFile = pkgs.runCommand "reproducible-10mb-file.bin" {
     nativeBuildInputs = [ pkgs.openssl ];
   } ''
-    (openssl enc -aes-256-ctr -pass pass:"fixed-seed-phrase" -nosalt </dev/zero 2>/dev/null || true) | dd bs=4k iflag=fullblock count=2 of=$out
+    (openssl enc -aes-256-ctr -pass pass:"fixed-seed-phrase" -nosalt </dev/zero 2>/dev/null || true) | dd bs=4k iflag=fullblock count=5120 of=$out
   ''; # 4k x 2560
 
   # The seed determines all randomized link (topo 2 and 3)
@@ -39,7 +39,7 @@ let
   receiverCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} .";
 
   # --- seeded pseudo-randomness --------------------------------------------
-  inherit (import ./lib/seeded-random.nix { inherit lib; } seed) rand uniform uniformInt;
+  inherit (import ./seeded-random.nix { inherit lib; } seed) rand uniform uniformInt;
 
   # Loss probabilities are drawn uniformly but rounded to 3 decimal digits
   uniformLoss =

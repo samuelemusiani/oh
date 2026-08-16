@@ -16,3 +16,12 @@ func (*Client) RequestLeafPacket(index uint32, rootHash [32]byte) *packet.Reques
 		RootHash: rootHash,
 	}
 }
+
+func (*Client) FeedbackPacket(id, index, packetsReceived uint16, serverIP [16]byte) *packet.Feedback {
+	return &packet.Feedback{
+		RequestID:     id,
+		PacketIndex:   index,
+		NumberPackets: packetsReceived,
+		ServerIP:      serverIP,
+	}
+}

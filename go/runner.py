@@ -35,11 +35,11 @@ BINARY_SRC  = "./cmd/oh.go"
 DEFAULT_CLIENT_DIR = "/tmp/mftp-received"
 
 # Random file generation defaults
-GEN_FILE_COUNT   = 20
-GEN_FILE_MAX_BYTES = 1024 * 64
+GEN_FILE_COUNT   = 1
+GEN_FILE_MAX_BYTES = 1024 * 512 * 4 * 256
 GEN_FILE_STRICY = True # generate files with exactly GEN_FILE_MAX_BYTES if True, otherwise random sizes up to that limit
 
-GEN_FILENAME_LENGTH = 4
+GEN_FILENAME_LENGTH = 10
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 
@@ -157,8 +157,14 @@ def generate_random_files(count: int = GEN_FILE_COUNT) -> tuple[str, list[str]]:
     """
     tmp_dir = tempfile.mkdtemp(prefix="mftp-server-files-")
     files   = []
+    generated_names = []
     for i in range(count):
-        name = "".join(random.choices(string.ascii_lowercase, k=GEN_FILENAME_LENGTH))
+        while True:
+            name = "".join(random.choices(string.ascii_lowercase + string.digits, k=GEN_FILENAME_LENGTH))
+            if name not in generated_names:
+                generated_names.append(name)
+                break
+
         path = os.path.join(tmp_dir, name)
 
         if GEN_FILE_STRICY:

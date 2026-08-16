@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	fecFlushTimeout = 100 * time.Millisecond
+	fecFlushTimeout = 200 * time.Millisecond
 	fecWaitTimeout  = 500 * time.Millisecond
 )
 
@@ -66,7 +66,7 @@ func (e *FECEncoder) Run(recv <-chan packet.Message, send chan<- Packet) error {
 
 		case msg := <-recv:
 			switch msg.Type() {
-			case packet.MessageTypeAdvertisement:
+			case packet.MessageTypeAdvertisement, packet.MessageTypeFeedbackRequest:
 				// Advertisement messages should not be included in FEC blocks
 				e.l.Debug("received advertisement message, encoding and sending immediately")
 				pkt, err := e.fec.EncodeIgnore(msg)
@@ -87,6 +87,10 @@ func (e *FECEncoder) Run(recv <-chan packet.Message, send chan<- Packet) error {
 			}
 		}
 	}
+}
+
+func (e *FECEncoder) EncodeIgnore(msg packet.Message) (Packet, error) {
+	return e.fec.EncodeIgnore(msg)
 }
 
 type FECDecoder struct {
@@ -111,6 +115,7 @@ func (d *FECDecoder) Run(recv <-chan PacketWithSrc, send chan<- packet.MessageWi
 	}
 
 	blockMap := make(map[uint64]*block)
+	decodedMap := make(map[uint64]bool)
 	// TODO: There is a small possiblity of deadlock if the blockChan is full
 	// and the main loop does not select on it
 	blockChan := make(chan uint64, 4096)
@@ -137,6 +142,10 @@ func (d *FECDecoder) Run(recv <-chan PacketWithSrc, send chan<- packet.MessageWi
 			return fmt.Errorf("error getting index ID from FEC header: %w", err)
 		}
 		d.l.Debug("received FEC message", "blockID", blockID, "indexID", indexID, "src", msg.Src.String())
+
+		if decodedMap[blockID] {
+			return nil
+		}
 
 		b, ok := blockMap[blockID]
 		if !ok {
@@ -181,7 +190,7 @@ func (d *FECDecoder) Run(recv <-chan PacketWithSrc, send chan<- packet.MessageWi
 		b.buff = append(b.buff, msg)
 		b.index[indexID] = struct{}{}
 
-		if len(b.buff) >= d.fec.BlockSize() {
+		if len(b.buff) >= d.fec.BlockSize()+d.fec.RepairCount() {
 			d.l.Debug("received enough packets to decode FEC block", "blockID", blockID)
 			// We have received enough packets to decode the block, we can stop the timer
 			if !b.timer.Stop() {
@@ -242,7 +251,7 @@ func (d *FECDecoder) Run(recv <-chan PacketWithSrc, send chan<- packet.MessageWi
 
 			recovered, err := d.fec.Decode(pkts)
 			if err != nil {
-				d.l.Error("error decoding FEC block", "error", err, "blockID", blockID)
+				// d.l.Error("error decoding FEC block", "error", err, "blockID", blockID)
 				delete(blockMap, blockID)
 				continue
 			}
@@ -258,6 +267,7 @@ func (d *FECDecoder) Run(recv <-chan PacketWithSrc, send chan<- packet.MessageWi
 				}
 			}
 			d.l.Debug("FEC block decoded successfully", "blockID", blockID)
+			decodedMap[blockID] = true
 			delete(blockMap, blockID)
 		}
 	}
@@ -304,6 +314,7 @@ type FECType uint8
 const (
 	FECTypeNull FECType = iota
 	FECTypeSemiNull
+	FECTypeXOR
 )
 
 func NewFEC(t FECType) FEC {
@@ -314,6 +325,11 @@ func NewFEC(t FECType) FEC {
 		return &semiNullFEC{
 			BlockSizeValue:   10,
 			RepairCountValue: 0,
+		}
+	case FECTypeXOR:
+		return &xorFEC{
+			BlockSizeValue:   8,
+			RepairCountValue: 4,
 		}
 	default:
 		panic("unknown FEC type")
@@ -402,8 +418,8 @@ type semiNullFECHeader struct {
 }
 
 func (e *semiNullFEC) parseHeader(pkt Packet) (semiNullFECHeader, error) {
-	if len(pkt) < 16 {
-		return semiNullFECHeader{}, fmt.Errorf("packet too short to contain FEC header: expected at least 16 bytes, got %d bytes", len(pkt))
+	if len(pkt) < binary.Size(semiNullFECHeader{}) {
+		return semiNullFECHeader{}, fmt.Errorf("packet too short to contain FEC header: expected at least %d bytes, got %d bytes", binary.Size(semiNullFECHeader{}), len(pkt))
 	}
 
 	buff := bytes.NewReader(pkt[:binary.Size(semiNullFECHeader{})])
@@ -561,3 +577,286 @@ func (f *semiNullFEC) Decode(pkts []Packet) ([]packet.Message, error) {
 	}
 	return result, nil
 }
+
+// xorFEC is an FEC implementation that generates xor packets as repair
+type xorFEC struct {
+	// Initialized at startup and hold the size of the FEC block
+	// BlockSize is how many data packets form one FEC block
+	BlockSizeValue int
+	// Initialized at startup and hold the size of the FEC block
+	// RepairCount is how many repair packets are generated per block
+	RepairCountValue int
+
+	// Counter to create blockIDs incrementally
+	counter uint64
+}
+
+type xorFECHeader struct {
+	// Increasing ID for blocks. Derived on the counter
+	BlockID uint64
+	// Packet index into the block
+	IndexID uint64
+	// True if the current packet is a repair packet
+	FECPacket bool
+	// If the packet is not in the FEC block so the decoder should ignore it
+	Ignore bool
+
+	// Length of the first packet before xor. Only valid if FECPacket is true
+	L1 uint16
+	// Length of the second packet before xor. Only valid if FECPacket is true
+	L2 uint16
+}
+
+func (e *xorFEC) parseHeader(pkt Packet) (xorFECHeader, error) {
+	if len(pkt) < binary.Size(xorFECHeader{}) {
+		return xorFECHeader{}, fmt.Errorf("packet too short to contain FEC header: expected at least %d bytes, got %d bytes", binary.Size(xorFECHeader{}), len(pkt))
+	}
+
+	buff := bytes.NewReader(pkt[:binary.Size(xorFECHeader{})])
+	var header xorFECHeader
+	if err := binary.Read(buff, binary.BigEndian, &header); err != nil {
+		return xorFECHeader{}, fmt.Errorf("error decoding FEC header: %w", err)
+	}
+	return header, nil
+}
+
+func (e *xorFEC) encodeHeader(h xorFECHeader) ([]byte, error) {
+	var buff bytes.Buffer
+	if err := binary.Write(&buff, binary.BigEndian, h); err != nil {
+		return nil, fmt.Errorf("error encoding FEC header: %w", err)
+	}
+	return buff.Bytes(), nil
+}
+
+func (f *xorFEC) BlockSize() int {
+	return f.BlockSizeValue
+}
+
+func (f *xorFEC) RepairCount() int {
+	return f.RepairCountValue
+}
+
+func (f *xorFEC) BlockID(pkt Packet) (uint64, error) {
+	h, err := f.parseHeader(pkt)
+	if err != nil {
+		return 0, fmt.Errorf("error parsing FEC header: %w", err)
+	}
+	return h.BlockID, nil
+}
+
+func (f *xorFEC) IndexID(pkt Packet) (uint64, error) {
+	h, err := f.parseHeader(pkt)
+	if err != nil {
+		return 0, fmt.Errorf("error parsing FEC header: %w", err)
+	}
+	return h.IndexID, nil
+}
+
+func (f *xorFEC) Ignore(pkt Packet) (bool, error) {
+	h, err := f.parseHeader(pkt)
+	if err != nil {
+		return false, fmt.Errorf("error parsing FEC header: %w", err)
+	}
+	return h.Ignore, nil
+}
+
+func (f *xorFEC) EncodeIgnore(msg packet.Message) (Packet, error) {
+	pkt, err := packet.WritePacket(msg)
+	if err != nil {
+		return nil, fmt.Errorf("error encoding message: %w", err)
+	}
+	header, err := f.encodeHeader(xorFECHeader{
+		BlockID:   0,
+		IndexID:   0,
+		FECPacket: false,
+		Ignore:    true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error encoding FEC header: %w", err)
+	}
+	return append(header, pkt...), nil
+}
+
+func (f *xorFEC) DecodeIgnore(pkt Packet) (packet.Message, error) {
+	h, err := f.parseHeader(pkt)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing FEC header: %w", err)
+	}
+	if !h.Ignore {
+		return nil, fmt.Errorf("packet is not marked to be ignored")
+	}
+	msg, err := packet.ReadPacket(pkt[binary.Size(xorFECHeader{}):])
+	if err != nil {
+		return nil, fmt.Errorf("error decoding message: %w", err)
+	}
+	return msg, nil
+}
+
+func (f *xorFEC) Encode(block []packet.Message) ([]Packet, error) {
+	// We pad by duplicating the packets that we have.
+	// This can increase overhead compared to a simpler padding with empty packets,
+	// but at the same time it gives a bettere chance to deliver the packet
+	// Of course the protocol is duplication tollerant :)
+	for i := range f.BlockSize() - len(block) {
+		block = append(block, block[i])
+	}
+
+	result := make([]Packet, f.BlockSize()+f.RepairCount())
+	blockID := f.counter
+	for i, msg := range block {
+		var err error
+		result[i], err = f.encodeHeader(xorFECHeader{
+			BlockID:   blockID,
+			IndexID:   uint64(i),
+			FECPacket: false,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error encoding FEC header: %w", err)
+		}
+
+		pkt, err := packet.WritePacket(msg)
+		if err != nil {
+			return nil, fmt.Errorf("error encoding message: %w", err)
+		}
+		result[i] = append(result[i], pkt...)
+	}
+
+	// FEC
+	for i := range f.RepairCount() {
+		var err error
+
+		pkt1, err := packet.WritePacket(block[i])
+		if err != nil {
+			return nil, fmt.Errorf("error encoding message: %w", err)
+		}
+		pkt2, err := packet.WritePacket(block[i+f.RepairCountValue])
+		if err != nil {
+			return nil, fmt.Errorf("error encoding message: %w", err)
+		}
+
+		result[i+f.BlockSize()], err = f.encodeHeader(xorFECHeader{
+			BlockID:   blockID,
+			IndexID:   uint64(f.BlockSize() + i),
+			FECPacket: true,
+			L1:        uint16(len(pkt1)),
+			L2:        uint16(len(pkt2)),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error encoding FEC header: %w", err)
+		}
+
+		if f.BlockSizeValue != 2*f.RepairCountValue {
+			panic("could not use xor FEC")
+		}
+
+		pkt := f.xor(pkt1, pkt2)
+		result[i+f.BlockSize()] = append(result[i+f.BlockSize()], pkt...)
+	}
+
+	f.counter++
+	return result, nil
+}
+
+func (f *xorFEC) Decode(pkts []Packet) ([]packet.Message, error) {
+	result := make([]packet.Message, 0, len(pkts))
+	var blockID *uint64
+	indexIDs := make(map[uint64]int)
+	for i, pkt := range pkts {
+		h, err := f.parseHeader(pkt)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing FEC header: %w", err)
+		}
+
+		if blockID == nil {
+			blockID = &h.BlockID
+		} else if *blockID != h.BlockID {
+			return nil, fmt.Errorf("mismatched block ID: expected %d, got %d", *blockID, h.BlockID)
+		}
+
+		if h.FECPacket {
+			indexIDs[h.IndexID] = i
+			continue
+		}
+
+		if _, ok := indexIDs[h.IndexID]; ok {
+			return nil, fmt.Errorf("duplicate index ID: %d", h.IndexID)
+		}
+		msg, err := packet.ReadPacket(pkt[binary.Size(xorFECHeader{}):])
+		if err != nil {
+			return nil, fmt.Errorf("error decoding packet: %w", err)
+		}
+		result = append(result, msg)
+		indexIDs[h.IndexID] = i
+	}
+
+	for i := 0; i < f.BlockSize(); i++ {
+		if _, ok := indexIDs[uint64(i)]; ok {
+			continue
+		}
+		// Possibly missing packet with index i
+		// Check if we can reconstruct it with FEC
+		var complementIndex int
+		var fecIndex int
+		if i < f.BlockSizeValue/2 {
+			complementIndex = i + f.BlockSizeValue/2
+			fecIndex = i + f.BlockSizeValue
+		} else {
+			complementIndex = i - f.BlockSizeValue/2
+			fecIndex = f.BlockSizeValue + complementIndex
+		}
+		indx1, ok := indexIDs[uint64(complementIndex)]
+		if !ok {
+			return nil, fmt.Errorf("missing packet with index ID %d and can't reconstruct because also missing %d", i, complementIndex)
+		}
+		indx2, ok := indexIDs[uint64(fecIndex)]
+		if !ok {
+			return nil, fmt.Errorf("missing packet with index ID %d and can't reconstruct because also missing %d", i, fecIndex)
+		}
+
+		// We can reconstruct the packet!
+		res := f.xor(pkts[indx1], pkts[indx2])
+		h, err := f.parseHeader(pkts[indx2])
+		if err != nil {
+			return nil, fmt.Errorf("could not parse header for fec packet at index %d: %w", indx2, err)
+		}
+
+		l := len(pkts[indx1]) - binary.Size(xorFECHeader{})
+
+		switch {
+		case l == int(h.L1):
+			res = res[:binary.Size(xorFECHeader{})+int(h.L2)]
+		case l == int(h.L2):
+			res = res[:binary.Size(xorFECHeader{})+int(h.L1)]
+		default:
+			return nil, fmt.Errorf("FEC len does not match given packet: %d %d %d", l, h.L1, h.L2)
+		}
+
+		msg, err := packet.ReadPacket(res[binary.Size(xorFECHeader{}):])
+		if err != nil {
+			return nil, fmt.Errorf("error decoding packet: %w", err)
+		}
+		result = append(result, msg)
+	}
+	return result, nil
+}
+
+func (*xorFEC) xor(a, b []uint8) []uint8 {
+	if len(a) < len(b) {
+		a, b = b, a
+	}
+	buff := make([]uint8, len(a))
+	for i := range b {
+		buff[i] = a[i] ^ b[i]
+	}
+	for i := range len(a) - len(b) {
+		buff[i+len(b)] = a[i+len(b)]
+	}
+
+	return buff
+}
+
+var (
+	_ FEC = &nullFEC{}
+	_ FEC = &semiNullFEC{}
+	_ FEC = &xorFEC{}
+)
