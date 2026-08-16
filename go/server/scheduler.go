@@ -325,8 +325,6 @@ func (s *scheduler) sortLeavesRequests() {
 			file := s.s.filesHashes[[32]byte(mt.Root())]
 			s.l.Debug("d2", "file", htos([32]byte(file.mt.Root())))
 
-			// TODO: if leavesIndexes are not many we can probably classify this as
-			// a small request
 			r := request{
 				t: time.Now(),
 				f: func() {
@@ -352,6 +350,7 @@ func (s *scheduler) sortLeavesRequests() {
 					}
 				},
 			}
+			// If leavesIndexes are not many (1) we classify this as a small request
 			if len(leavesIndexes) > 1 {
 				s.bigRequestQueue <- r
 			} else {
