@@ -24,7 +24,7 @@ import (
 
 const (
 	advertisementInterval = 5 * time.Second
-	fecType               = internal.FECTypeNull
+	fecType               = internal.FECTypeXOR
 )
 
 type Server struct {

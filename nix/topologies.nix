@@ -39,7 +39,7 @@ let
   receiverCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} .";
 
   # --- seeded pseudo-randomness --------------------------------------------
-  inherit (import ./lib/seeded-random.nix { inherit lib; } seed) rand uniform uniformInt;
+  inherit (import ./seeded-random.nix { inherit lib; } seed) rand uniform uniformInt;
 
   # Loss probabilities are drawn uniformly but rounded to 3 decimal digits
   uniformLoss =

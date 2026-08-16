@@ -4,7 +4,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-BIN_SIZE = 0.10  # seconds, for v1 only
+BIN_SIZE = 1  # seconds, for v1 only
 
 input_path = sys.argv[1]
 out_dir = os.path.dirname(os.path.abspath(input_path))

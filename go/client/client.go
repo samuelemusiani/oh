@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	fecType = internal.FECTypeNull
+	fecType = internal.FECTypeXOR
 )
 
 var (
