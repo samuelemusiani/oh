@@ -94,7 +94,7 @@ func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast
 
 	// TODO: Set TTL to a reasonable value.
 	// 2 should be reasonable as we only have 1 router in the network
-	err = p.SetMulticastTTL(2)
+	err = p.SetMulticastTTL(64)
 	if err != nil {
 		_ = p.Close()
 		return nil, fmt.Errorf("error setting TTL: %w", err)
