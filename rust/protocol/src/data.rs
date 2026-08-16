@@ -120,7 +120,11 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
             let empty_node = Box::new(MerkleNode { hash: empty_hash.clone().try_into().unwrap(), left: None, right: None });
             intermediate_hashes.push(empty_node);
         }
-        assert!(intermediate_hashes.len() % 2 == 0, "Merkle tree construction failed: number of leaves is not a power of two after padding");
+        assert!(
+            intermediate_hashes.len() % 2 == 0,
+            "Merkle tree construction failed: number of leaves is not a power of two after padding, was {}",
+            intermediate_hashes.len()
+        );
         let mut hash_collection: HashSet<Hash> = HashSet::new();
         hash_collection.extend(intermediate_hashes.iter().map(|node| node.hash));
         while intermediate_hashes.len() > 1 {
@@ -187,7 +191,8 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
     fn next_power_of_two(n: usize) -> usize {
         let mut n = n;
         if n <= 1 {
-            return 1;
+            // While the next power of two of 1 is 1, we want to return 2 for our use case since we need the amount of padding to be devisible by 2
+            return 2;
         }
         n -= 1;
         n |= n >> 1;

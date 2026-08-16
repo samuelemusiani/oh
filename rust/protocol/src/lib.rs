@@ -4,7 +4,7 @@ use tokio::fs::{File, ReadDir};
 use zerocopy::{IntoBytes, TryFromBytes};
 
 use crate::{
-    data::Metadata,
+    data::{FileMetadata, Metadata},
     error::OHProtocolError,
     packet::{
         AdvertisementPacket, DataPacket, FeedbackPacket, FeedbackRequestPacket, MerkleTreePacket, MetadataPacket, MetadataPacketData, Packet,
@@ -41,6 +41,16 @@ pub async fn build_manifest_from_files(files: &[PathBuf]) -> Result<data::Manife
         let file_metadata = data::FileMetadata::new(file_name, file).await?;
         metadata.push(Metadata::File(file_metadata));
     }
+    // Sort the metadata by data hash
+    metadata.sort_by(|a, b| {
+        if let Metadata::File(file_a) = a
+            && let Metadata::File(file_b) = b
+        {
+            file_a.data_tree.root_hash().cmp(file_b.data_tree.root_hash())
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
     let manifest_tree = data::ManifestTree::new(metadata, ()).await?;
     Ok(manifest_tree)
 }
