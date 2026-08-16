@@ -109,33 +109,25 @@ func newScheduler(s *Server) *scheduler {
 }
 
 func (s *scheduler) enqueueLeavesRequest(req *packet.RequestLeaves, src net.IP) {
-	fmt.Println("leaves request", htos(req.Hash))
 	s.dedupLeavesRWMutex.RLock()
 	dedup, ok := s.dedupLeaves[*req]
 	s.dedupLeavesRWMutex.RUnlock()
 	if ok {
-		fmt.Println("found in map", htos(req.Hash))
 		if dedup.sending {
-			fmt.Println("already sending", htos(req.Hash))
 			return
 		}
 		if time.Since(dedup.finishedSending).Seconds() < 10 {
-			fmt.Println("finishedSending < 10", htos(req.Hash))
 			return
 		}
 		if time.Since(dedup.enqueued).Seconds() < 15 {
-			fmt.Println("enqueued < 15", htos(req.Hash))
 			return
 		}
 	} else {
-		fmt.Println("NOT found in map", htos(req.Hash))
 		dedup = &schedulerDedup{}
 		s.dedupLeavesRWMutex.Lock()
 		s.dedupLeaves[*req] = dedup
 		s.dedupLeavesRWMutex.Unlock()
 	}
-
-	fmt.Println("leaves request SUCCEEDED")
 
 	select {
 	case s.leavesQueue <- leavesWithIP{r: req, ip: src}:
@@ -146,7 +138,6 @@ func (s *scheduler) enqueueLeavesRequest(req *packet.RequestLeaves, src net.IP) 
 }
 
 func (s *scheduler) enqueueLeafRequest(req *packet.RequestLeaf, src net.IP) {
-	fmt.Println("leaf request")
 	s.dedupLeafRWMutex.RLock()
 	dedup, ok := s.dedupLeaf[*req]
 	s.dedupLeafRWMutex.RUnlock()
@@ -166,8 +157,6 @@ func (s *scheduler) enqueueLeafRequest(req *packet.RequestLeaf, src net.IP) {
 		s.dedupLeaf[*req] = dedup
 		s.dedupLeafRWMutex.Unlock()
 	}
-
-	fmt.Println("leaf request SUCCEEDED")
 
 	select {
 	case s.leafQueue <- leafWithIP{r: req, ip: src}:
@@ -466,7 +455,7 @@ func (s *scheduler) handleBigRequests() {
 
 		s.nBigRequests.Add(1)
 
-		s.l.Error("BIG REQUEST SCHEDULED")
+		s.l.Debug("BIG REQUEST SCHEDULED")
 		go func() {
 			defer func() {
 				<-s.bigRequestsSemaphore
@@ -489,7 +478,7 @@ func (s *scheduler) handleSmallRequests() {
 
 		s.nSmallRequests.Add(1)
 
-		s.l.Error("SMALL REQUEST SCHEDULED")
+		s.l.Debug("SMALL REQUEST SCHEDULED")
 		go func() {
 			defer func() {
 				<-s.smallRequestsSemaphore

@@ -436,7 +436,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			chInfo.reRequest.Reset(timeoutPartialChunkRequest)
 			// We can request the chunk again, by hash :)
 
-			c.l["file"].Error("timeout waiting for finishing chunk for file", "file_hash", htos(hf), "chunk_hash", htos(chInfo.hash))
+			c.l["file"].Debug("timeout waiting for finishing chunk for file", "file_hash", htos(hf), "chunk_hash", htos(chInfo.hash))
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
@@ -450,7 +450,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 			if len(cHandler.chunksToWrite) > 0 {
 				firstNeededChunk = uint64(cHandler.chunksToWrite[0]) - 1
 			}
-			fmt.Println("progress", "progress", float64(cHandler.totalWritten)/float64(cHandler.totalSize)*100, len(cHandler.chunksToWrite), firstNeededChunk)
+			fmt.Println("progress", float64(cHandler.totalWritten)/float64(cHandler.totalSize)*100, len(cHandler.chunksToWrite), firstNeededChunk)
 
 			if cHandler.totalWritten >= cHandler.totalSize {
 				return
@@ -496,7 +496,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 					break
 				}
 
-				c.l["file"].Error("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
+				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
 				go c.scheduler.requestLeafByIndex(hf, uint32(i))
 				leavesToRequest++
 				if leavesToRequest >= 8 {
