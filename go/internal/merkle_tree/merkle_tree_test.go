@@ -167,12 +167,12 @@ func TestFindNodeIndexFromHash(t *testing.T) {
 	special := h.Sum(nil)
 
 	pmt := NewPartialMerkleTree(4, special, sha256.New())
-	idx, ok := pmt.FindNodeIndexFromHash(special)
-	if !ok || idx != 0 {
-		t.Errorf("expected index 0, got %d ok=%v", idx, ok)
+	idx, ok := pmt.FindNodeIndexesFromHash(special)
+	if !ok || len(idx) != 1 || idx[0] != 0 {
+		t.Errorf("expected index 0, got %d ok=%v", idx[0], ok)
 	}
 
-	_, ok = pmt.FindNodeIndexFromHash([]byte("missing"))
+	_, ok = pmt.FindNodeIndexesFromHash([]byte("missing"))
 	if ok {
 		t.Error("expected false for missing hash")
 	}
