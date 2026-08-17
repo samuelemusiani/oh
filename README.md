@@ -37,3 +37,15 @@ These issues include:
 	One could also make the server send MerkleTree packets with a depth as high as
 	possible before sending metadata.
 * Some fields are weirdly misaligned due to reserved fields.
+
+more points (TODO: format properly):
+
+* could also have smaller manifests (and multiple manifests per server), and send whole manifest in one packet
+* leaf has no data offset => can't save to file easily
+* leaf has no length, nor last-packet bit => need to hash to find out if complete
+* leaf has no packet data offset => difficult to write to buffer
+* for data merkle trees, it would also be useful to have the merkle tree available
+	up-front, to check if a leaf really belongs to a file. And to not have to
+	re-request all data if one leaf hash is wrong.
+* Leaf packets don't need root hash if we always had merkle tree available.
+* (do we really need size in file metadata that is > 64 bit?)
