@@ -462,7 +462,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				c.reRequestHashBuffMutex.Unlock()
 			}
 
-			c.l["file"].Debug("timeout waiting for finishing chunk for file", "file_hash", htos(hf), "chunk_hash", htos(chInfo.hash))
+			c.l["file"].Debug("timeout waiting for finishing chunk for file", "file_hash", htos(hf), "chunk_hash", htos(chInfo.hash), "index", chunkID)
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
@@ -484,16 +484,14 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 	go func() {
 		for {
+			cHandler.timer.Reset(timeoutMissingChunkRequest)
 			<-cHandler.timer.C
-			defer cHandler.timer.Reset(timeoutMissingChunkRequest)
 			// This timer should fire when we receive up to k chunks but we need n chunks
 			// (where k < n) to complete the file. So basically it's used to request
 			// again the chunks that we completly didn't receive are at the end of
 			// the file. We should have another way to request missing chunks that
 			// are between received chunks
 
-			// TODO: This probably requires only a sweep in the number of leafs (tree
-			// is balanced) and request all of them
 			c.l["file"].Debug("timeout waiting for chunks for file", "file_hash", htos(hf))
 
 			leavesToRequest := 0
@@ -532,7 +530,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				// This is used if we are requesting the file not by the top-root hash
 				// but using sub-trees. In this case we avoid asking chunks that we have
 				// yet to query in the scheduler
-				if len(absIndexes) > 0 && absIndexes[len(absIndexes)-1] > i {
+				if len(absIndexes) > 0 && absIndexes[len(absIndexes)-1] < i {
 					break
 				}
 
