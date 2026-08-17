@@ -2,7 +2,7 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr, IpAddr, SocketAddr},
     path::PathBuf,
     sync::Arc,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
 };
 
 use log::{debug, error, trace, warn};
@@ -10,8 +10,21 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
 use protocol::Hash;
+use protocol::data::{hash_chunk_from_iter, hash_empty_chunk, combine_hashes};
 use crate::error::AppError;
 use crate::client::merkle_pool::*;
+
+// TODO: Not yet implemented:
+// * requesting manifests
+// * requesting file data
+// * directories
+// * storing to file (we could have an abstract data receiver, that we feed with
+//   metadata and file data and that instructs us to fetch files)
+// * handling Data packets that don't use a file root hash but a subtree root as root hash
+//   (maybe should have something where each merkle tree node is either complete
+//   or not, and if it becomes complete, it notifies all its parents that it's complete.
+//   eventually such a parent will be file root. (and file root could notify abstract receiver))
+// * re-requesting metadata and file data
 
 // allow max this many feedback packets per second
 const MAX_NUM_FEEDBACK_PACKETS_PER_SEC: u32 = 2000;
@@ -26,10 +39,94 @@ struct FeedbackState {
     t_next_send: Option<std::time::Instant>,
 }
 
-struct FileMetadata {
-    size: usize,
-    merkle_tree_height: u8,
+struct FileState {
+    // Metadata
+    size: usize, // Value from server. Might be incorrect.
     name: Box<[u8]>,
+    merkle_tree_height: u8,
+    // Size is 2**merkle_tree_height.
+    // Initialized with empty leaves.
+    // Must not be modified after leaf_hashes_correct was set to true.
+    leaf_hashes: Box<[MerklePoolIdx]>,
+    // If true, the hashes build the merkle tree with the correct root.
+    // If false, we need to request all leaves again (unless we have knowledge
+    // about the merkle tree).
+    leaf_hashes_correct: bool,
+    // Whether all leaves are complete.
+    // Only used when leaf_hashes_correct is true.
+    // If this and leaf_hashes_correct are both true, the file is completely recevied.
+    leaves_complete: bool,
+}
+
+impl FileState {
+    fn update_leaf_hashes_correct(&mut self, merkle_pool: &MerklePool) {
+        if self.leaf_hashes_correct {
+            return;
+        }
+
+        // TODO: build merkle tree and check if correct
+
+        if self.leaf_hashes_correct {
+            debug!("Got correct leaf hashes for file {}", str::from_utf8(&self.name).unwrap_or("invalid utf8"));
+        }
+    }
+
+    fn update_leaves_complete(&mut self, leaf_states: &HashMap<MerklePoolIdx, LeafState>) {
+        if !self.leaf_hashes_correct || self.leaves_complete {
+            return;
+        }
+        self.leaves_complete =
+            self.leaf_hashes.iter()
+            .all(|leaf_hidx| {
+                if let Some(leaf_state) = leaf_states.get(&leaf_hidx) {
+                    leaf_state.is_complete
+                } else {
+                    false
+                }
+            });
+        if self.leaves_complete {
+            debug!("Leaves complete for file {}", str::from_utf8(&self.name).unwrap_or("invalid utf8"));
+        }
+    }
+}
+
+struct LeafState {
+    leaf_hash: MerklePoolIdx,
+    // The roots that were used when sending the leaf.
+    // When leaf is completed, all of the files in here need to be updated.
+    subtrees_to_notify: HashSet<MerklePoolIdx>,
+    // The data
+    packets: Vec<Option<Box<[u8]>>>,
+    // If true, we have received everything => hash(conmiau(packets)) = leaf_hash
+    is_complete: bool,
+}
+
+impl LeafState {
+    #[allow(dead_code)]
+    fn len(&self) -> usize {
+        self.packets.iter()
+            .filter_map(|p| p.as_ref()) // ignore None
+            .map(|p| p.len())
+            .sum()
+    }
+
+    fn try_complete(&mut self, merkle_pool: &MerklePool) {
+        let no_holes = self.packets.iter()
+            .all(|p| p.is_some());
+        if !no_holes {
+            return;
+        }
+
+        //TODO: need to apply FEC before hashing?
+
+        let hash = hash_chunk_from_iter(self.packets.iter().map(|p| p.as_ref().unwrap().as_ref()));
+
+        if let Some(hidx) = merkle_pool.try_pool(&hash) {
+            if hidx == self.leaf_hash {
+                self.is_complete = true;
+            }
+        }
+    }
 }
 
 // lock order of fields with locks is in delcaration order in struct
@@ -40,6 +137,7 @@ pub struct Client {
     output_directory: PathBuf,
     // Any hashes that we know about.
     merkle_pool: Mutex<MerklePool>,
+    empty_chunk_hidx: MerklePoolIdx,
     // How much data we received and how much feedback we should send, per sender ip.
     feedback_states: Mutex<HashMap<Ipv6Addr, FeedbackState>>,
     // Hashes that we want to request.
@@ -49,7 +147,8 @@ pub struct Client {
     // TODO: should store manifest hashes separately, as they're higher priority (might even request when there's ongoing traffic)
     // TODO: should also give up after N times for manifest hashes (unless it's seen again)
     desired_hashes: Mutex<Vec<MerklePoolIdx>>,
-    file_metadatas: Mutex<HashMap<MerklePoolIdx, FileMetadata>>,
+    file_states: Mutex<HashMap<MerklePoolIdx, FileState>>,
+    leaf_states: Mutex<HashMap<MerklePoolIdx, LeafState>>,
 }
 
 impl Client {
@@ -79,15 +178,29 @@ impl Client {
         let socket = UdpSocket::bind((interface, port)).await?;
         socket.join_multicast_v4(multicast_addr, interface)?;
 
+        let mut merkle_pool = MerklePool::default();
+        let mut leaf_states = HashMap::new();
+
+        // insert empty chunk with its data (= emtpy) in leaf
+        let (empty_chunk_hidx, _) = merkle_pool.pool(&hash_empty_chunk());
+        leaf_states.insert(empty_chunk_hidx, LeafState {
+            leaf_hash: empty_chunk_hidx,
+            subtrees_to_notify: Default::default(),
+            packets: vec![],
+            is_complete: true,
+        });
+
         Ok(Client {
             socket,
             multicast_addr,
             multicast_port: port,
             output_directory,
-            merkle_pool: Default::default(),
+            merkle_pool: merkle_pool.into(),
+            empty_chunk_hidx,
             feedback_states: Default::default(),
             desired_hashes: Default::default(),
-            file_metadatas: Default::default(),
+            file_states: Default::default(),
+            leaf_states: leaf_states.into(),
         })
     }
 
@@ -151,7 +264,7 @@ impl Client {
                 merkle_pool.node_mut( manifest_hidx).is_manifest_root = true;
                 merkle_pool.node_mut(     data_hidx).is_data_root = true;
                 merkle_pool.node_mut(extrameta_hidx).is_extrameta_root = true;
-                drop(merkle_pool); // unlock
+                // drop(merkle_pool); // unlock
 
                 if manifest_hidx_new {
                     // Oho, a new manifest that we don't know about.
@@ -162,14 +275,29 @@ impl Client {
                 if let protocol::packet::MetadataPacketData::FileMetadata{
                             merkle_tree_depth, size_bits, size, name_length, name }
                         = metadata_packet.data {
+                    let merkle_tree_depth = u8::from_be(merkle_tree_depth);
+                    // TODO: reject if merkle_tree_depth is too high
+                    let num_leaves = 1 << (merkle_tree_depth as usize);
                     // new file meta to store?
-                    let mut file_metadatas = self.file_metadatas.lock().await;
-                    if file_metadatas.get(&data_hidx).is_none() {
-                        file_metadatas.insert(data_hidx, FileMetadata {
+                    let mut file_states = self.file_states.lock().await;
+                    if file_states.get(&data_hidx).is_none() {
+                        let leaf_hashes = vec![self.empty_chunk_hidx; num_leaves].into_boxed_slice();
+                        let file_state = file_states.entry(data_hidx).insert_entry(FileState {
                             size: 0, //TODO
-                            merkle_tree_height: u8::from_be(merkle_tree_depth),
                             name: Box::from(name), //TODO: name_length relevant?
-                        });
+                            merkle_tree_height: merkle_tree_depth,
+                            leaf_hashes,
+                            leaf_hashes_correct: false,
+                            leaves_complete: false,
+                        }).into_mut();
+
+                        // leaves might already be complete (if file is empty)
+                        file_state.update_leaf_hashes_correct(&merkle_pool);
+
+                        if file_state.leaf_hashes_correct {
+                            let leaf_states = self.leaf_states.lock().await;
+                            file_state.update_leaves_complete(&leaf_states);
+                        }
                     }
                 }
 
@@ -194,8 +322,11 @@ impl Client {
             },
 
             protocol::packet::Packet::Data(data_packet) => {
-                let len = data_packet.length; // this is not be I think (kinda awkward to convert here...)
+                let len = data_packet.length; // this is not big endian, I think (kinda awkward to convert here, btw...)
                 debug!("Client: Handling Data packet from {} ({} bytes)", addr, len);
+
+                let leaf_st_idx = u32::from_be(data_packet.leaf_index);
+                let packet_idx = u32::from_be(data_packet.packet_index);
 
                 let server_ip6 = match addr {
                     SocketAddr::V4(addr_ip4) => { addr_ip4.ip().to_ipv6_mapped() },
@@ -204,14 +335,84 @@ impl Client {
 
                 // Update feedback state of server
                 // FIXME: respect use ECN markings, see https://datatracker.ietf.org/doc/draft-ietf-tsvwg-udp-ecn/
-                let mut feedback_states = self.feedback_states.lock().await;
-                if let Some(feedback_state) = feedback_states.get_mut(&server_ip6) {
-                    feedback_state.num_packets_received_in_window =
-                            u16::saturating_add(feedback_state.num_packets_received_in_window, 1);
+                {
+                    let mut feedback_states = self.feedback_states.lock().await;
+                    if let Some(feedback_state) = feedback_states.get_mut(&server_ip6) {
+                        feedback_state.num_packets_received_in_window =
+                                u16::saturating_add(feedback_state.num_packets_received_in_window, 1);
+                    }
                 }
 
-                // Use the data
-                todo!("use the data");
+                // Collect new known hashes
+                let mut merkle_pool = self.merkle_pool.lock().await;
+                let (st_root_hidx, _st_root_new) = merkle_pool.pool(data_packet.root_hash);
+                let (leaf_hidx, _leaf_new) = merkle_pool.pool(data_packet.leaf_hash);
+                // drop(merkle_pool); // unlock
+
+                // Update the file
+                let mut file_states = self.file_states.lock().await;
+                let mut leaf_states = self.leaf_states.lock().await;
+                //TODO: handle non-root st_root
+                if let Some(file_state) = file_states.get_mut(&st_root_hidx) {
+                    // Get non-sub tree and idx in it (here trivial)
+                    let leaf_idx = leaf_st_idx as usize;
+                    let root_hidx = st_root_hidx;
+
+                    // Update file's leaf hashes
+                    if leaf_idx >= file_state.leaf_hashes.len() {
+                        warn!("Got leaf index in Data packet that is out of bounds: {} >= {}",
+                                leaf_idx, file_state.leaf_hashes.len());
+                        return Ok(());
+                    }
+                    if !file_state.leaf_hashes_correct &&
+                            file_state.leaf_hashes[leaf_idx] != leaf_hidx {
+                        file_state.leaf_hashes[leaf_idx] = leaf_hidx;
+
+                        // new leaf hash => might have correct hashes now
+                        file_state.update_leaf_hashes_correct(&merkle_pool);
+
+                        // when leaf hashes become correct, init leaves_complete
+                        if file_state.leaf_hashes_correct {
+                            file_state.update_leaves_complete(&leaf_states);
+                        }
+                    }
+                }
+
+                let leaf_state = leaf_states.entry(leaf_hidx)
+                    .or_insert(LeafState {
+                        leaf_hash: leaf_hidx,
+                        subtrees_to_notify: Default::default(),
+                        packets: vec![],
+                        is_complete: false,
+                    });
+
+                // Vice versa: make root known to leaf
+                let was_inserted = leaf_state.subtrees_to_notify.insert(st_root_hidx);
+                if was_inserted && leaf_state.is_complete {
+                    // Leaf is already complete, but wasn't known to file yet
+                    // => could notify file
+                    // But nothing to do, file_state.leaves_complete is already
+                    // updated when the leaf hash is added to file_state.
+                }
+
+                // Store the data
+                if !leaf_state.is_complete {
+                    if packet_idx as usize > leaf_state.packets.len() {
+                        leaf_state.packets.resize(packet_idx as usize + 1, None);
+                    }
+                    leaf_state.packets[packet_idx as usize] = Some(Box::from(data_packet.data));
+
+                    // do we have everything from this leaf?
+                    leaf_state.try_complete(&merkle_pool);
+                    if leaf_state.is_complete {
+                        // notify files about completedness
+                        for st_root_hidx in leaf_state.subtrees_to_notify.clone() {
+                            if let Some(file_state) = file_states.get_mut(&st_root_hidx) {
+                                file_state.update_leaves_complete(&leaf_states);
+                            }
+                        }
+                    }
+                }
             },
 
             protocol::packet::Packet::MerkleTree(merkle_tree_packet) => {
@@ -239,10 +440,10 @@ impl Client {
                     return Ok(());
                 };
                 let full_tree_height = {
-                    let file_metadatas = self.file_metadatas.lock().await;
-                    let file_metadata = file_metadatas.get(&root_hidx);
-                    if let Some(file_metadata) = file_metadata {
-                        file_metadata.merkle_tree_height
+                    let file_states = self.file_states.lock().await;
+                    let file_state = file_states.get(&root_hidx);
+                    if let Some(file_state) = file_state {
+                        file_state.merkle_tree_height
                     } else {
                         debug!("Metadata for MerkleTree packet root hash is not known: {}",
                                 base16::encode_lower(merkle_tree_packet.root_hash));
@@ -269,7 +470,7 @@ impl Client {
                     let idx_begin = if level == 0 { 0 } else { binary_tree_size(level - 1) };
                     let idx_end = binary_tree_size(level);
                     for i_out in idx_begin..idx_end {
-                        tree_hashes[i_out] = protocol::data::combine_hashes(
+                        tree_hashes[i_out] = combine_hashes(
                                 full_tree_height - level as u8,
                                 &tree_hashes[left_child_idx(i_out)],
                                 &tree_hashes[right_child_idx(i_out)]);
@@ -430,7 +631,7 @@ impl Client {
             }
 
             // TODO: awake me on feedback request, and sleep less long
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     }
 }

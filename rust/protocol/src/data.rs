@@ -17,8 +17,37 @@ const TARGET_PAYLOAD_SIZE: usize = 1400;
 const PACKETS_PER_CHUNK: usize = 16;
 
 pub fn combine_hashes(level: u8, left_hash: &Hash, right_hash: &Hash) -> Hash {
-    let combined_hash = [level.as_bytes(), left_hash, right_hash].concat();
-    return Sha256::digest(&combined_hash).try_into().unwrap();
+    return Sha256::new()
+        .chain_update(level.as_bytes())
+        .chain_update(left_hash)
+        .chain_update(right_hash)
+        .finalize()
+        .into();
+}
+
+pub fn hash_empty_chunk() -> Hash {
+    hash_chunk(&[])
+}
+
+pub fn hash_chunk(chunk_data: &[u8]) -> Hash {
+    // return Sha256::new()
+    //     .chain_update(0u8.as_bytes())
+    //     .chain_update(chunk_data)
+    //     .finalize()
+    //     .into();
+    return hash_chunk_from_iter([chunk_data]);
+}
+
+pub fn hash_chunk_from_iter<'a, It>(chunk_data: It) -> Hash
+where
+    It: IntoIterator<Item = &'a [u8]>
+{
+    let mut hasher = Sha256::new();
+    hasher.update(0u8.as_bytes());
+    for part in chunk_data {
+        hasher.update(part);
+    }
+    return hasher.finalize().into();
 }
 
 pub trait MerkleHash {
@@ -131,7 +160,7 @@ where
 impl<T: MerkleHash, E> MerkleTree<T, E> {
     pub async fn new(leaves: Vec<T>, extra_data: E) -> Result<Self, OHProtocolError> {
         let mut level: u8 = 1;
-        let empty_hash = Sha256::digest(0u8.as_bytes());
+        let empty_hash = hash_empty_chunk();
         let mut intermediate_hashes: Vec<Box<MerkleNode>> =
             leaves.iter().map(|leaf| Box::new(MerkleNode { hash: leaf.merkle_hash(), left: None, right: None })).collect();
         let padding_needed = Self::next_power_of_two(intermediate_hashes.len()) - intermediate_hashes.len();
@@ -275,15 +304,15 @@ impl FileMetadata {
             let mut stream = Box::pin(chunker.as_stream());
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.expect("Failed to read chunk");
-                let chunk_hash = Sha256::digest([0u8.as_bytes(), &chunk.data].concat());
-                let leaf = DataLeaf { hash: chunk_hash.try_into().unwrap(), offset: chunk.offset, length: chunk.data.len() as u64 };
+                let chunk_hash = hash_chunk(&chunk.data);
+                let leaf = DataLeaf { hash: chunk_hash, offset: chunk.offset, length: chunk.data.len() as u64 };
                 leaves.push(leaf);
             }
         } else {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
-            let leaf_hash = Sha256::digest([0u8.as_bytes(), &data].concat());
-            let leaf = DataLeaf { hash: leaf_hash.try_into().unwrap(), offset: 0, length: data.len() as u64 };
+            let leaf_hash = hash_chunk(&data);
+            let leaf = DataLeaf { hash: leaf_hash, offset: 0, length: data.len() as u64 };
             leaves.push(leaf);
         }
         let mmap = unsafe { Mmap::map(&file)? };
@@ -302,7 +331,7 @@ impl FileMetadata {
             },
         };
         let encoded_packet = encode_packet(Packet::Metadata(metadata_packet))?;
-        Ok(Self { name: filename, data_tree, hash: Sha256::digest([0u8.as_bytes(), &encoded_packet].concat()).try_into().unwrap() })
+        Ok(Self { name: filename, data_tree, hash: hash_chunk(&encoded_packet) })
     }
 }
 

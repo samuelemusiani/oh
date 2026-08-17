@@ -15,9 +15,10 @@ pub struct MerklePool {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MerklePoolIdx(pub usize);
 
+// TODO: there's no reason for this. just remove it, and make the MerklePool a simple (thread-safe?) hash-string pool
 pub struct MerkleNode {
 	pub hash: Hash,
-	pub parent: Option<MerklePoolIdx>,
+	pub parent: Option<MerklePoolIdx>, //TODO: probably a bad idea to have exactly one parent
 	pub left_child: Option<MerklePoolIdx>,
 	pub right_child: Option<MerklePoolIdx>,
 	pub is_manifest_root: bool,
