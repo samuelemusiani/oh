@@ -534,7 +534,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 					break
 				}
 
-				c.l["file"].Error("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
+				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
 				go c.scheduler.requestLeafByIndex(hf, uint32(i))
 				leavesToRequest++
 				if leavesToRequest >= 8 {
