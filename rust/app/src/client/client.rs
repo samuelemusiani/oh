@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     path::PathBuf,
     sync::Arc,
 };
@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 
 use crate::client::merkle_pool::*;
 use crate::error::AppError;
-use protocol::Hash;
-use protocol::data::{combine_hashes, hash_chunk_from_iter, hash_empty_chunk};
+// use protocol::Hash;
+use protocol::data::{hash_chunk_from_iter, hash_empty_chunk, build_merkle_tree};
 
 // TODO: Not yet implemented:
 // * requesting manifests
@@ -40,8 +40,9 @@ struct FeedbackState {
 }
 
 struct FileState {
-    // Metadata
-    size: usize, // Value from server. Might be incorrect.
+    // Value from server. Might be incorrect.
+    #[allow(dead_code)]
+    size: usize,
     name: Box<[u8]>,
     merkle_tree_height: u8,
     // Size is 2**merkle_tree_height.
@@ -145,25 +146,34 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(multicast_addr: IpAddr, interface: Option<IpAddr>, port: u16, output_directory: PathBuf) -> Result<Self, AppError> {
+    pub async fn new(
+            multicast_addr: IpAddr,
+            interface: Ipv4Addr,
+            port: u16,
+            output_directory: PathBuf
+        ) -> Result<Self, AppError>
+    {
         let output_dir_metadata = output_directory.metadata()?;
         if !output_dir_metadata.is_dir() {
             return Err(AppError::InvalidArgument(format!("Output directory {} is not a directory", output_directory.display())));
         }
+
         let multicast_addr: Ipv4Addr = match multicast_addr {
             IpAddr::V4(ipv4_addr) => ipv4_addr,
             IpAddr::V6(ipv6_addr) => {
                 return Err(AppError::InvalidArgument(format!("IPv6 multicast address {} is not supported", ipv6_addr)));
             }
         };
-        let interface = match interface {
-            Some(IpAddr::V4(ipv4_addr)) => ipv4_addr,
-            Some(IpAddr::V6(ipv6_addr)) => {
-                return Err(AppError::InvalidArgument(format!("IPv6 interface address {} is not supported", ipv6_addr)));
-            }
-            None => Ipv4Addr::UNSPECIFIED,
-        };
-        let socket = UdpSocket::bind((interface, port)).await?;
+        let addr = SocketAddrV4::new(multicast_addr, port);
+        let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+        socket.bind(&addr.into())?;
+        socket.set_multicast_loop_v4(false)?;
+        socket.set_multicast_ttl_v4(16)?;
+        if interface != Ipv4Addr::UNSPECIFIED {
+            socket.set_multicast_if_v4(&interface)?;
+        }
+        let socket = UdpSocket::from_std(socket.into())?;
+        debug!("Joining multicast group {} on interface {}", multicast_addr, interface);
         socket.join_multicast_v4(multicast_addr, interface)?;
 
         let mut merkle_pool = MerklePool::default();
@@ -264,15 +274,39 @@ impl Client {
                     let merkle_tree_depth = u8::from_be(merkle_tree_depth);
                     // TODO: reject if merkle_tree_depth is too high
                     let num_leaves = 1 << (merkle_tree_depth as usize);
+                    let name_length: usize = u8::from_be(name_length).into();
+                    let mut name = name;
+                    if name.len() < name_length {
+                        warn!("name_length fields seems to be wrong");
+                    } else {
+                        name = &name[0..name_length];
+                    }
+
                     // new file meta to store?
                     let mut file_states = self.file_states.lock().await;
                     if file_states.get(&data_hidx).is_none() {
+                        let size: Option<usize> = match size_bits {
+                            0b00 => {
+                                if let Ok(size) = <[u8; 8]>::try_from(size) {
+                                    usize::try_from(u64::from_be_bytes(size)).ok()
+                                } else {
+                                    None
+                                }
+                            },
+                            0b01 => {
+                                <[u8; 16]>::try_from(size)
+                                    .map_or(None, |size|
+                                        usize::try_from(u128::from_be_bytes(size)).ok()
+                                    )
+                            }
+                            _ => None, // not supported
+                        };
                         let leaf_hashes = vec![self.empty_chunk_hidx; num_leaves].into_boxed_slice();
                         let file_state = file_states
                             .entry(data_hidx)
                             .insert_entry(FileState {
-                                size: 0,               //TODO
-                                name: Box::from(name), //TODO: name_length relevant?
+                                size: size.unwrap_or(usize::MAX),
+                                name: Box::from(name),
                                 merkle_tree_height: merkle_tree_depth,
                                 leaf_hashes,
                                 leaf_hashes_correct: false,
@@ -342,7 +376,7 @@ impl Client {
                 if let Some(file_state) = file_states.get_mut(&st_root_hidx) {
                     // Get non-sub tree and idx in it (here trivial)
                     let leaf_idx = leaf_st_idx as usize;
-                    let root_hidx = st_root_hidx;
+                    let _root_hidx = st_root_hidx;
 
                     // Update file's leaf hashes
                     if leaf_idx >= file_state.leaf_hashes.len() {
@@ -443,23 +477,8 @@ impl Client {
                 }
 
                 // Build whole merkle tree
-
-                let mut tree_hashes: Vec<Hash> = Vec::with_capacity(binary_tree_size(depth));
-                if depth != 0 {
-                    tree_hashes.resize(binary_tree_size(depth - 1), Default::default());
-                }
-                tree_hashes.extend_from_slice(merkle_tree_packet.nodes);
-                assert!(tree_hashes.len() == binary_tree_size(depth));
-
-                for level in (0..depth).rev() {
-                    // compute nodes on level level from nodes on level level+1
-                    let idx_begin = if level == 0 { 0 } else { binary_tree_size(level - 1) };
-                    let idx_end = binary_tree_size(level);
-                    for i_out in idx_begin..idx_end {
-                        tree_hashes[i_out] =
-                            combine_hashes(full_tree_height - level as u8, &tree_hashes[left_child_idx(i_out)], &tree_hashes[right_child_idx(i_out)]);
-                    }
-                }
+                let tree_hashes = build_merkle_tree(depth as u8, merkle_tree_packet.nodes,
+                        full_tree_height - depth as u8);
 
                 // Check correctness
                 if tree_hashes[0] != *merkle_tree_packet.root_hash {
@@ -476,6 +495,7 @@ impl Client {
                     tree_hidxs.push(hidx);
                 }
                 // set child-parent relations
+                // (TODO: wrap tree_hashes in a struct, for simpler access)
                 for level in 0..depth {
                     let idx_begin = if level == 0 { 0 } else { binary_tree_size(level - 1) };
                     let idx_end = binary_tree_size(level);

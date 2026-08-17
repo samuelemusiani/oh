@@ -2,7 +2,7 @@ use crate::client::Client;
 use crate::server::Server;
 use clap::Parser;
 use get_if_addrs::get_if_addrs;
-use log::{debug, error, info};
+use log::{debug, info};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -104,14 +104,14 @@ async fn main() -> anyhow::Result<()> {
         info!("Shutting down server...");
         return Ok(());
     }
-    if let Some(download_directory) = args.download_dir {
-        /*info!("Receiving into {}", download_directory.display());
-        let client = Arc::new(Client::new(args.multicast_addr, (iface_ip), args.port, download_directory).await?);
+    if let Some(download_directory) = args.download_dir && false /* TODO */ {
+        info!("Receiving into {}", download_directory.display());
+        let client = Arc::new(Client::new(args.multicast_addr, iface_ip, args.port, download_directory).await?);
         info!("Client initialized, running...");
         client.run().await?;
         let _ = tokio::signal::ctrl_c().await;
         info!("Shutting down client...");
-        return Ok(());*/
+        return Ok(());
     }
     return Ok(());
 }

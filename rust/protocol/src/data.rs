@@ -45,6 +45,57 @@ where
     return hasher.finalize().into();
 }
 
+// Builds a merkle tree from the hashes of the leaves.
+// leaf_hashes can be inner nodes, to build the upper part of the merkle tree. You
+// have to set levels_below_leaves to a non-0 value in this case.
+// depth is the height of the constructed merkle tree.
+// Returns the tree in a binary-heap-like layout. I.e. [0] is the root.
+pub fn build_merkle_tree(depth: u8, leaf_hashes: &[Hash], levels_below_leaves: u8) -> Box<[Hash]>
+{
+    let full_tree_height = depth + levels_below_leaves;
+    let depth = usize::from(depth);
+
+    assert!(leaf_hashes.len() <= 1 << depth);
+    assert!(leaf_hashes.len() == 1 << depth || levels_below_leaves == 0);
+
+    fn binary_tree_size(depth: usize) -> usize {
+        (1 << depth) * 2 - 1
+    }
+    fn left_child_idx(i: usize) -> usize {
+        i * 2 + 1
+    }
+    fn right_child_idx(i: usize) -> usize {
+        left_child_idx(i) + 1
+    }
+
+    let mut tree_hashes: Vec<Hash> = Vec::with_capacity(binary_tree_size(depth));
+
+    // default-init all levels above leaves
+    if depth != 0 {
+        tree_hashes.resize(binary_tree_size(depth - 1), Default::default());
+    }
+
+    // insert leaf level
+    tree_hashes.extend_from_slice(leaf_hashes);
+    assert!(tree_hashes.len() <= binary_tree_size(depth));
+    tree_hashes.resize(binary_tree_size(depth), hash_empty_chunk());
+
+    let mut tree_hashes = tree_hashes.into_boxed_slice();
+
+    // build the upper levels
+    for level in (0..depth).rev() {
+        // compute nodes on level level from nodes on level level+1
+        let idx_begin = if level == 0 { 0 } else { binary_tree_size(level - 1) };
+        let idx_end = binary_tree_size(level);
+        for i_out in idx_begin..idx_end {
+            tree_hashes[i_out] =
+                combine_hashes(full_tree_height - level as u8, &tree_hashes[left_child_idx(i_out)], &tree_hashes[right_child_idx(i_out)]);
+        }
+    }
+
+    return tree_hashes;
+}
+
 pub trait MerkleHash {
     fn merkle_hash(&self) -> Hash;
 }
