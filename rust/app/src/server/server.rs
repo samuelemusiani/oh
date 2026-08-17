@@ -18,6 +18,10 @@ use crate::{
     },
 };
 
+/// IPv4 and UDP header bytes that every packet carries on the wire on top of
+/// its payload, which congestion control has to account for.
+const IP_UDP_OVERHEAD: usize = 20 + 8;
+
 pub struct Server {
     socket: UdpSocket,
     manifest: &'static protocol::data::ManifestTree,
@@ -143,9 +147,12 @@ impl Server {
                     return Ok(());
                 }
                 debug!("Handling feedback packet from {} with request id {}", addr, feedback_packet.request_id);
-                self.congestion_control
-                    .handle_feedback(feedback_packet.number_of_packets_received, feedback_packet.packet_index, feedback_packet.request_id, addr.ip())
-                    .await;
+                self.congestion_control.handle_feedback(
+                    feedback_packet.number_of_packets_received,
+                    feedback_packet.packet_index,
+                    feedback_packet.request_id,
+                    addr.ip(),
+                );
             }
         }
         Ok(())
@@ -153,16 +160,29 @@ impl Server {
 
     async fn sender(&self) -> Result<(), AppError> {
         let mut packet_queue = self.packet_queue.lock().await;
+        // Earliest time at which the next packet may go out so that the average
+        // rate stays within what congestion control allows. Sleeping for a fixed
+        // interval per packet cannot do that: above roughly a megabyte per
+        // second the interval falls below the timer's resolution, and it would
+        // also ignore how large the packets actually are.
+        let mut next_send = std::time::Instant::now();
         while let Some(packet) = packet_queue.recv().await {
             trace!("Sending packet: {:?}", packet);
             let bytes = protocol::encode_owned_packet(packet)?;
+
+            let now = std::time::Instant::now();
+            if next_send > now {
+                tokio::time::sleep(next_send - now).await;
+            } else {
+                // Nothing was queued for a while; do not turn that into credit
+                // for a burst.
+                next_send = now;
+            }
             self.socket.send_to(&bytes, (self.multicast_addr, self.multicast_port)).await?;
-            self.congestion_control.add_packet();
-            // Sleep for a duration based on the current rate from congestion control to avoid sending too many packets too quickly
-            tokio::time::sleep(std::time::Duration::from_millis(
-                ((1500 as f64 / self.congestion_control.get_rate().await as f64) * 1000 as f64).round() as u64,
-            ))
-            .await;
+            self.congestion_control.record_sent_packet();
+
+            let on_the_wire = (bytes.len() + IP_UDP_OVERHEAD) as f64;
+            next_send += std::time::Duration::from_secs_f64(on_the_wire / self.congestion_control.rate() as f64);
         }
         Ok(())
     }
@@ -175,14 +195,18 @@ impl Server {
             let packet_bytes = protocol::encode_packet(advertisement_packet)?;
             trace!("Sending advertisement packet {:?}", &packet_bytes);
             self.socket.send_to(&packet_bytes, (self.multicast_addr, self.multicast_port)).await?;
+            // Clients count every packet they receive from us, so this one has
+            // to be part of our own count as well.
+            self.congestion_control.record_sent_packet();
             debug!("Sent advertisement packet with root hash: {}", base16::encode_lower(&self.manifest.root_hash()));
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     }
 
     async fn congestion_control(&self) -> Result<(), AppError> {
+        let timespan = std::time::Duration::from_millis(cc::FEEDBACK_TIMESPAN.into());
         loop {
-            let feedback_id = self.congestion_control.get_feedback_id();
+            let feedback_id = self.congestion_control.next_feedback_id();
             let feedback_request = protocol::packet::Packet::FeedbackRequest(protocol::packet::FeedbackRequestPacket {
                 request_id: feedback_id,
                 timespan: cc::FEEDBACK_TIMESPAN,
@@ -192,9 +216,11 @@ impl Server {
             let packet_bytes = protocol::encode_packet(feedback_request)?;
             trace!("Sending feedback request packet {:?}", &packet_bytes);
             self.socket.send_to(&packet_bytes, (self.multicast_addr, self.multicast_port)).await?;
+            self.congestion_control.record_sent_packet();
+            self.congestion_control.feedback_request_sent(feedback_id, timespan);
             debug!("Sent feedback request packet with request id: {}", feedback_id);
             tokio::time::sleep(std::time::Duration::from_millis((2 * cc::FEEDBACK_TIMESPAN) as u64)).await;
-            self.congestion_control.adjust_rate().await;
+            self.congestion_control.adjust_rate();
         }
     }
 }
