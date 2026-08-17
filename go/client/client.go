@@ -351,9 +351,17 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 			return nil
 		}
 
+		absIndexes, err := f.mt.GetAbsoluteLevesIndexesFromRootHash(data.RootHash[:])
+		if err != nil {
+			panic(fmt.Sprintf("could not get abs indexes from root hash %s: %s", htos(data.RootHash), err.Error()))
+		}
+		if len(absIndexes) == 0 {
+			panic("absIndexes has length 0")
+		}
+
 		f.dataChan <- &dataInChunk{
 			chunkHash:   data.LeafHash,
-			chunkID:     data.LeafIndex,
+			chunkID:     data.LeafIndex + absIndexes[0],
 			packetIndex: data.PacketIndex,
 			data:        data.Data,
 		}

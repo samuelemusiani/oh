@@ -272,10 +272,10 @@ func (s *scheduler) mtRequestor(toRequest chan *merkletree.MerkleTree, requestor
 			}
 		case msg := <-merkleTreeChan:
 			if msg.rootHash != *currentHash {
-				s.client.l["scheduler"].Error("Received merkle tree for unknown hash", "hash", htos(msg.rootHash))
-
+				// We ignore the merkle tree if it's not the current one that we are requesting
 				continue
 			}
+			fmt.Println("received valid MT message")
 
 			// For merkle trees of files we can just put the nodes because we know
 			// the total height. For merkle trees of metadata we cannot do this and
@@ -321,6 +321,7 @@ func (s *scheduler) mtRequestor(toRequest chan *merkletree.MerkleTree, requestor
 			}
 
 			s.client.treesMapMutex.Lock()
+			s.client.filesMapMutex.Lock()
 			for _, n := range nodes {
 				if slices.Equal(n.Hash(), emptyHash) {
 					// skip empty nodes
@@ -330,7 +331,9 @@ func (s *scheduler) mtRequestor(toRequest chan *merkletree.MerkleTree, requestor
 					mt: currentMT,
 					t:  s.client.trees[[32]byte(currentMT.Root())].t,
 				}
+				s.client.filesMap[[32]byte(n.Hash())] = s.client.filesMap[[32]byte(currentMT.Root())]
 			}
+			s.client.filesMapMutex.Unlock()
 			s.client.treesMapMutex.Unlock()
 
 			queryNextHashOrAdvance()

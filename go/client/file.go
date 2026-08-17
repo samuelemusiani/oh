@@ -283,9 +283,24 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 	c.l["file"].Debug("chunk written to file", "file_hash", htos(ch.fileHash), "chunk_id", id, "offset", offset, "total_written", ch.totalWritten)
 
 	c.treesMapMutex.Lock()
-	err := c.trees[ch.fileHash].mt.PutLeaf(leafHash.Sum(nil), id)
+	mt := c.trees[ch.fileHash].mt
+	currentQeryH, ok := mt.NextHashToQuery()
+	if !ok {
+		panic("current hash to query not found")
+	}
+	err := mt.PutLeaf(leafHash.Sum(nil), id)
 	if err != nil {
 		return fmt.Errorf("putting leaf into merkle tree: %w", err)
+	}
+
+	nextHashToQuery, ok := mt.NextHashToQuery()
+	// When the file is complete, ok would be False and we don't have to signal
+	// here the completion
+	if ok {
+		if !slices.Equal(currentQeryH, nextHashToQuery) {
+			fmt.Println("signaling file complete", htos([32]byte(currentQeryH)))
+			c.scheduler.signalFileComplete([32]byte(currentQeryH))
+		}
 	}
 	c.treesMapMutex.Unlock()
 
@@ -473,9 +488,17 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 			leavesToRequest := 0
 
-			// TODO: Try to be smart. We can probably the number of last leaves based
-			// on file size and chunk size. But for now we will just request all
-			// missing chunks up to the depth of the Merkle tree.
+			nh, found := file.mt.NextHashToQuery()
+			if !found {
+				nh = file.mt.Root()
+			}
+			absIndexes, err := file.mt.GetAbsoluteLevesIndexesFromRootHash(nh)
+			if err != nil {
+				c.l["file"].Error("could not get abs leaves indexes from root hash", "file_hash", htos(hf), "root_hash", nh)
+
+				continue
+			}
+
 			for i := range merkletree.LeafsFromDepth(fileDataFromMetadata(file.metadata).MerkleTreeDepth) {
 				cHandler.rwChunksInfoLock.RLock()
 				_, ok := cHandler.chunksInfo[uint32(i)]
@@ -493,6 +516,13 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				}
 
 				if len(cHandler.chunksToWrite) > 0 && cHandler.chunksToWrite[len(cHandler.chunksToWrite)-1] < uint32(i) {
+					break
+				}
+
+				// This is used if we are requesting the file not by the top-root hash
+				// but using sub-trees. In this case we avoid asking chunks that we have
+				// yet to query in the scheduler
+				if len(absIndexes) > 0 && absIndexes[len(absIndexes)-1] > i {
 					break
 				}
 

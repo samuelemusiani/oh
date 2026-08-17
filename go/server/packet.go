@@ -67,23 +67,27 @@ func (s *Server) AdvertisementPacket() (*packet.Advertisement, error) {
 }
 
 func (f *file) ChunkPacket(index uint32) ([]packet.Data, error) {
+	return f.ChunkPacketWithSubtree(uint64(index), [32]byte(f.mt.Root()), index)
+}
+
+func (f *file) ChunkPacketWithSubtree(absIndex uint64, h [32]byte, relativeIndex uint32) ([]packet.Data, error) {
 	maxDataSize := packet.MaxDataPacketPayload
-	if index >= uint32(len(f.chunks)) {
-		return nil, fmt.Errorf("invalid chunk index %d for file %s", index, f.name)
+	if absIndex >= uint64(len(f.chunks)) {
+		return nil, fmt.Errorf("invalid chunk index %d for file %s", absIndex, f.name)
 	}
 
-	data, err := f.chunks[index].Data(f.mmapFile)
+	data, err := f.chunks[absIndex].Data(f.mmapFile)
 	if err != nil {
-		return nil, fmt.Errorf("error getting data for chunk %d of file %s: %w", index, f.name, err)
+		return nil, fmt.Errorf("error getting data for chunk %d of file %s: %w", absIndex, f.name, err)
 	}
 
 	pkts := make([]packet.Data, 0)
 
 	for i := 0; i < len(data); i += maxDataSize {
 		pkts = append(pkts, packet.Data{
-			RootHash:    [32]byte(f.mt.Root()),
-			LeafHash:    [32]byte(f.mt.LeafHash(index)),
-			LeafIndex:   index,
+			RootHash:    h,
+			LeafHash:    [32]byte(f.mt.LeafHash(uint32(absIndex))),
+			LeafIndex:   relativeIndex,
 			PacketIndex: uint32(i / maxDataSize),
 			Data:        data[i:min(i+maxDataSize, len(data))],
 		})
