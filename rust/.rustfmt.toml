@@ -1,0 +1,5 @@
+max_width = 150
+wrap_comments = true
+fm_params_layout = "Compressed"
+imports_granularity = "Item"
+use_small_heuristics = "Max"

@@ -11,7 +11,9 @@ pub(crate) enum PacketType {
     RequestLeaf,
     Data,
     MerkleTree,
+    #[allow(dead_code)]
     StreamPoll,
+    #[allow(dead_code)]
     StreamState,
     FeedbackRequest,
     Feedback = 9,
@@ -31,6 +33,13 @@ pub(crate) struct AdvertisementPacket {
     _reserved: u8,
     pub hash: Hash,
 }
+
+impl AdvertisementPacket {
+    pub fn new(hash: Hash) -> Self {
+        Self { header: PacketHeader { version: 1, packet_type: PacketType::Advertisement }, _reserved: 0, hash }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, IntoBytes, TryFromBytes, KnownLayout, Immutable)]
 #[repr(u8)]
 pub(crate) enum BlobType {
@@ -50,12 +59,32 @@ pub(crate) struct MetadataPacketHead {
     _reserved: u8,
 }
 
+impl MetadataPacketHead {
+    pub fn new(manifest_hash: Hash, data_hash: Hash, extra_metadata_hash: Hash, blob_type: BlobType) -> Self {
+        Self {
+            header: PacketHeader { version: 1, packet_type: PacketType::Metadata },
+            manifest_hash,
+            data_hash,
+            extra_metadata_hash,
+            blob_type,
+            _reserved: 0,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, IntoBytes, TryFromBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub(crate) struct FileMetadata_1 {
     pub merkle_tree_depth: u8,
     pub size_bits: u8,
 }
+
+impl FileMetadata_1 {
+    pub fn new(merkle_tree_depth: u8, size_bits: u8) -> Self {
+        Self { merkle_tree_depth, size_bits }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, IntoBytes, TryFromBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub(crate) struct FileMetadata_2 {
@@ -90,6 +119,12 @@ pub(crate) struct RequestLeavesPacket {
     pub root_hash: Hash,
 }
 
+impl RequestLeavesPacket {
+    pub fn new(root_hash: Hash) -> Self {
+        Self { header: PacketHeader { version: 1, packet_type: PacketType::RequestLeaves }, _reserved: 0, root_hash }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, IntoBytes, TryFromBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub(crate) struct RequestLeafPacket {
@@ -97,6 +132,12 @@ pub(crate) struct RequestLeafPacket {
     _reserved: u16,
     pub index: u32,
     pub root_hash: Hash,
+}
+
+impl RequestLeafPacket {
+    pub fn new(root_hash: Hash, index: u32) -> Self {
+        Self { header: PacketHeader { version: 1, packet_type: PacketType::RequestLeaf }, _reserved: 0, index, root_hash }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, TryFromBytes, KnownLayout, Immutable)]
@@ -142,4 +183,18 @@ pub(crate) struct FeedbackPacket {
     pub number_of_packets_received: u16,
     _reserved2: u16,
     pub server_ip: [u8; 16],
+}
+
+impl FeedbackPacket {
+    pub fn new(request_id: u16, packet_index: u16, number_of_packets_received: u16, server_ip: [u8; 16]) -> Self {
+        Self {
+            header: PacketHeader { version: 1, packet_type: PacketType::Feedback },
+            request_id,
+            _reserved: 0,
+            packet_index,
+            number_of_packets_received,
+            _reserved2: 0,
+            server_ip,
+        }
+    }
 }

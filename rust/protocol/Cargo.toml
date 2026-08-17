@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+base16 = "0.2.1"
+fastcdc = { version = "4.0.1", features = ["tokio"] }
+futures-util = "0.3.33"
+memmap2 = "0.9.11"
+sha2 = "0.11.0"
 thiserror = "2.0.19"
 tokio = { version = "1.53.1", features = ["full"] }
 zerocopy = { version = "0.8.56", features = ["derive"] }

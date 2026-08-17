@@ -1,8 +1,15 @@
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use log::info;
+use clap::Parser;
+use log::{debug, info};
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::client::Client;
+use crate::server::Server;
+
+mod client;
+mod error;
+mod server;
 
 #[derive(Parser, Debug)]
 #[command(name = "cli")]
@@ -11,7 +18,7 @@ pub struct Args {
     pub multicast_addr: IpAddr,
 
     #[arg(short = 'i', long = "interface")]
-    pub interface: Option<String>,
+    pub interface: Option<IpAddr>,
 
     #[arg(short = 't', long = "port", default_value_t = 5000)]
     pub port: u16,
@@ -22,19 +29,11 @@ pub struct Args {
     #[arg(short = 'q', long = "receive_packet_loss", value_parser = parse_probability)]
     pub loss_receive: Option<f64>,
 
-    #[command(subcommand)]
-    pub mode: Mode,
-}
+    #[arg(short = 's', long = "serve", num_args = 1..)]
+    pub server_files: Option<Vec<PathBuf>>,
 
-#[derive(Subcommand, Debug)]
-pub enum Mode {
-    Send {
-        #[arg(required = true, num_args = 1..)]
-        files: Vec<PathBuf>,
-    },
-    Receive {
-        download_directory: PathBuf,
-    },
+    #[arg(conflicts_with = "server_files")]
+    pub download_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -55,31 +54,19 @@ impl Args {
 }
 
 fn parse_probability(s: &str) -> Result<f64, String> {
-    let v: f64 = s
-        .parse()
-        .map_err(|_| format!("'{s}' is not a valid number"))?;
-    if (0.0..=1.0).contains(&v) {
-        Ok(v)
-    } else {
-        Err(format!("probability must be in [0.0, 1.0], got {v}"))
-    }
+    let v: f64 = s.parse().map_err(|_| format!("'{s}' is not a valid number"))?;
+    if (0.0..=1.0).contains(&v) { Ok(v) } else { Err(format!("probability must be in [0.0, 1.0], got {v}")) }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     {
-        simple_logger::SimpleLogger::new()
-            .env()
-            .init()
-            .expect("Failed to initialize logging");
+        simple_logger::SimpleLogger::new().env().init().expect("Failed to initialize logging");
     }
     #[cfg(not(debug_assertions))]
     {
-        simple_logger::SimpleLogger::new()
-            .with_level(log::LevelFilter::Info)
-            .env()
-            .init()
-            .expect("Failed to initialize logging");
+        simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).env().init().expect("Failed to initialize logging");
     }
     let args = Args::parse();
     info!("Parsed arguments: {args:?}");
@@ -87,14 +74,27 @@ fn main() -> Result<()> {
     let loss = args.loss_model();
     info!("Selected packet loss model: {loss:?}");
 
-    match args.mode {
-        Mode::Send { files } => {
-            println!("Sending {files:?}");
-            todo!();
-        }
-        Mode::Receive { download_directory } => {
-            println!("Receiving into {}", download_directory.display());
-            todo!();
-        }
+    if let Some(files) = args.server_files {
+        info!("Sending files: {files:?}");
+        debug!("Generating data structures for files...");
+        let manifest = protocol::build_manifest_from_files(&files).await?;
+        let manifest = Box::leak(Box::new(manifest));
+        info!("Generated manifest: {}", base16::encode_lower(&manifest.root_hash()));
+        let server = Arc::new(Server::new(manifest, args.multicast_addr, args.interface, args.port).await?);
+        info!("Server initialized, running...");
+        server.run().await?;
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Shutting down server...");
+        return Ok(());
     }
+    if let Some(download_directory) = args.download_dir {
+        info!("Receiving into {}", download_directory.display());
+        let client = Arc::new(Client::new(args.multicast_addr, args.interface, args.port, download_directory).await?);
+        info!("Client initialized, running...");
+        client.run().await?;
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Shutting down client...");
+        return Ok(());
+    }
+    return Ok(());
 }

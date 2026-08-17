@@ -1,5 +1,6 @@
 use crate::Hash;
 
+#[derive(Debug)]
 pub enum Packet<'a> {
     Advertisement(AdvertisementPacket<'a>),
     Metadata(MetadataPacket<'a>),
@@ -10,10 +11,13 @@ pub enum Packet<'a> {
     FeedbackRequest(FeedbackRequestPacket<'a>),
     Feedback(FeedbackPacket<'a>),
 }
+#[derive(Debug)]
 
 pub struct AdvertisementPacket<'a> {
     pub hash: &'a Hash,
 }
+
+#[derive(Debug)]
 
 pub struct MetadataPacket<'a> {
     pub manifest_hash: &'a Hash,
@@ -22,31 +26,26 @@ pub struct MetadataPacket<'a> {
     pub data: MetadataPacketData<'a>,
 }
 
+#[derive(Debug)]
 pub enum MetadataPacketData<'a> {
-    FileMetadata {
-        merkle_tree_depth: u8,
-        size_bits: u8,
-        size: &'a [u8],
-        name_length: u8,
-        name: &'a [u8],
-    },
-    StreamMetadata {
-        stream_id: &'a Hash,
-    },
-    DirectoryMetadata {
-        name_length: u8,
-        name: &'a [u8],
-    },
+    FileMetadata { merkle_tree_depth: u8, size_bits: u8, size: &'a [u8], name_length: u8, name: &'a [u8] },
+    StreamMetadata { stream_id: &'a Hash },
+    DirectoryMetadata { name_length: u8, name: &'a [u8] },
 }
+
+#[derive(Debug)]
 
 pub struct RequestLeavesPacket<'a> {
     pub root_hash: &'a Hash,
 }
 
+#[derive(Debug)]
+
 pub struct RequestLeafPacket<'a> {
     pub root_hash: &'a Hash,
     pub index: u32,
 }
+#[derive(Debug)]
 
 pub struct DataPacket<'a> {
     pub root_hash: &'a Hash,
@@ -56,6 +55,7 @@ pub struct DataPacket<'a> {
     pub length: u16,
     pub data: &'a [u8],
 }
+#[derive(Debug)]
 
 pub struct MerkleTreePacket<'a> {
     pub root_hash: &'a Hash,
@@ -63,11 +63,15 @@ pub struct MerkleTreePacket<'a> {
     pub nodes: &'a [Hash],
 }
 
+#[derive(Debug)]
+
 pub struct FeedbackRequestPacket<'a> {
     pub request_id: &'a u16,
     pub timespan: &'a u16,
     pub number_of_feedbacks: &'a u16,
 }
+
+#[derive(Debug)]
 
 pub struct FeedbackPacket<'a> {
     pub request_id: &'a u16,
