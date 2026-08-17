@@ -1,4 +1,4 @@
-use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes};
+use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes, network_endian::{U16, U32}};
 
 use crate::Hash;
 
@@ -146,10 +146,10 @@ pub(crate) struct DataPacket {
     header: PacketHeader,
     pub root_hash: Hash,
     pub leaf_hash: Hash,
-    pub leaf_index: u32,
-    pub packet_index: u32,
-    _reserved: u16,
-    pub length: u16,
+    pub leaf_index: U32,
+    pub packet_index: U32,
+    _reserved: U16,
+    pub length: U16,
     pub data: [u8],
 }
 
@@ -168,20 +168,20 @@ pub(crate) struct MerkleTreePacket {
 pub(crate) struct FeedbackRequestPacket {
     header: PacketHeader,
     _reserved: u8,
-    pub request_id: u16,
-    pub timespan: u16,
-    pub number_of_feedbacks: u16,
+    pub request_id: U16,
+    pub timespan: U16,
+    pub number_of_feedbacks: U16,
 }
 
 #[derive(Debug, PartialEq, Eq, IntoBytes, TryFromBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub(crate) struct FeedbackPacket {
     header: PacketHeader,
-    pub request_id: u16,
-    _reserved: u16,
-    pub packet_index: u16,
-    pub number_of_packets_received: u16,
-    _reserved2: u16,
+    pub request_id: U16,
+    _reserved: U16,
+    pub packet_index: U16,
+    pub number_of_packets_received: U16,
+    _reserved2: U16,
     pub server_ip: [u8; 16],
 }
 
@@ -189,11 +189,11 @@ impl FeedbackPacket {
     pub fn new(request_id: u16, packet_index: u16, number_of_packets_received: u16, server_ip: [u8; 16]) -> Self {
         Self {
             header: PacketHeader { version: 1, packet_type: PacketType::Feedback },
-            request_id,
-            _reserved: 0,
-            packet_index,
-            number_of_packets_received,
-            _reserved2: 0,
+            request_id: U16::new(request_id),
+            _reserved: U16::new(0),
+            packet_index: U16::new(packet_index),
+            number_of_packets_received: U16::new(number_of_packets_received),
+            _reserved2: U16::new(0),
             server_ip,
         }
     }

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use log::error;
+use log::{debug, error, info, trace};
 use protocol::{Hash, data::MerkleHash, packet_owned::PacketOwned};
 use tokio::sync::{Mutex, Notify, mpsc::Sender};
 
@@ -236,11 +236,19 @@ impl DataQueue {
                         }
                     }
                     Response::DataResponse { data, data_leaves, root_hash } => {
+                        trace!("Responding with data response for root_hash: {}", base16::encode_lower(&root_hash));
                         for (idx, leaf) in data_leaves.iter().enumerate() {
                             for (packet_index, chunk) in
                                 // Just a rough constant number for chunks, refine later...
                                 data.extra_data[leaf.offset as usize..(leaf.offset + leaf.length) as usize].chunks(1400).enumerate()
                             {
+                                info!(
+                                    "Prepared data packet for leaf: {}, with leaf-idx: {}, packet-idx: {}, chunk-length: {}",
+                                    base16::encode_lower(&leaf.hash),
+                                    idx,
+                                    packet_index,
+                                    chunk.len()
+                                );
                                 let data_packet = protocol::packet_owned::DataPacketOwned {
                                     root_hash,
                                     leaf_hash: leaf.hash,

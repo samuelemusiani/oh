@@ -8,7 +8,7 @@ pub enum Packet<'a> {
     RequestLeaf(RequestLeafPacket<'a>),
     Data(DataPacket<'a>),
     MerkleTree(MerkleTreePacket<'a>),
-    FeedbackRequest(FeedbackRequestPacket<'a>),
+    FeedbackRequest(FeedbackRequestPacket),
     Feedback(FeedbackPacket<'a>),
 }
 #[derive(Debug)]
@@ -65,17 +65,17 @@ pub struct MerkleTreePacket<'a> {
 
 #[derive(Debug)]
 
-pub struct FeedbackRequestPacket<'a> {
-    pub request_id: &'a u16,
-    pub timespan: &'a u16,
-    pub number_of_feedbacks: &'a u16,
+pub struct FeedbackRequestPacket {
+    pub request_id: u16,
+    pub timespan: u16,
+    pub number_of_feedbacks: u16,
 }
 
 #[derive(Debug)]
 
 pub struct FeedbackPacket<'a> {
-    pub request_id: &'a u16,
-    pub packet_index: &'a u16,
-    pub number_of_packets_received: &'a u16,
+    pub request_id: u16,
+    pub packet_index: u16,
+    pub number_of_packets_received: u16,
     pub server_ip: &'a [u8; 16],
 }

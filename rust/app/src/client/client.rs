@@ -1,18 +1,18 @@
 use std::{
-    net::{Ipv4Addr, Ipv6Addr, IpAddr, SocketAddr},
+    collections::{HashMap, HashSet},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
-    collections::{HashMap, HashSet},
 };
 
 use log::{debug, error, trace, warn};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
-use protocol::Hash;
-use protocol::data::{hash_chunk_from_iter, hash_empty_chunk, combine_hashes};
-use crate::error::AppError;
 use crate::client::merkle_pool::*;
+use crate::error::AppError;
+use protocol::Hash;
+use protocol::data::{combine_hashes, hash_chunk_from_iter, hash_empty_chunk};
 
 // TODO: Not yet implemented:
 // * requesting manifests
@@ -76,14 +76,7 @@ impl FileState {
             return;
         }
         self.leaves_complete =
-            self.leaf_hashes.iter()
-            .all(|leaf_hidx| {
-                if let Some(leaf_state) = leaf_states.get(&leaf_hidx) {
-                    leaf_state.is_complete
-                } else {
-                    false
-                }
-            });
+            self.leaf_hashes.iter().all(|leaf_hidx| if let Some(leaf_state) = leaf_states.get(&leaf_hidx) { leaf_state.is_complete } else { false });
         if self.leaves_complete {
             debug!("Leaves complete for file {}", str::from_utf8(&self.name).unwrap_or("invalid utf8"));
         }
@@ -104,15 +97,15 @@ struct LeafState {
 impl LeafState {
     #[allow(dead_code)]
     fn len(&self) -> usize {
-        self.packets.iter()
+        self.packets
+            .iter()
             .filter_map(|p| p.as_ref()) // ignore None
             .map(|p| p.len())
             .sum()
     }
 
     fn try_complete(&mut self, merkle_pool: &MerklePool) {
-        let no_holes = self.packets.iter()
-            .all(|p| p.is_some());
+        let no_holes = self.packets.iter().all(|p| p.is_some());
         if !no_holes {
             return;
         }
@@ -152,12 +145,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(
-        multicast_addr: IpAddr,
-        interface: Option<IpAddr>,
-        port: u16,
-        output_directory: PathBuf,
-    ) -> Result<Self, AppError> {
+    pub async fn new(multicast_addr: IpAddr, interface: Option<IpAddr>, port: u16, output_directory: PathBuf) -> Result<Self, AppError> {
         let output_dir_metadata = output_directory.metadata()?;
         if !output_dir_metadata.is_dir() {
             return Err(AppError::InvalidArgument(format!("Output directory {} is not a directory", output_directory.display())));
@@ -183,12 +171,10 @@ impl Client {
 
         // insert empty chunk with its data (= emtpy) in leaf
         let (empty_chunk_hidx, _) = merkle_pool.pool(&hash_empty_chunk());
-        leaf_states.insert(empty_chunk_hidx, LeafState {
-            leaf_hash: empty_chunk_hidx,
-            subtrees_to_notify: Default::default(),
-            packets: vec![],
-            is_complete: true,
-        });
+        leaf_states.insert(
+            empty_chunk_hidx,
+            LeafState { leaf_hash: empty_chunk_hidx, subtrees_to_notify: Default::default(), packets: vec![], is_complete: true },
+        );
 
         Ok(Client {
             socket,
@@ -206,9 +192,7 @@ impl Client {
 
     pub async fn run(self: Arc<Self>) -> Result<(), AppError> {
         let client = self.clone();
-        let feedback_sender_job = tokio::task::spawn(async move {
-            client.feedback_sender_run().await
-        });
+        let feedback_sender_job = tokio::task::spawn(async move { client.feedback_sender_run().await });
         self.receiver().await?;
         let _ = feedback_sender_job.await.unwrap();
         Ok(())
@@ -233,8 +217,7 @@ impl Client {
         let packet = protocol::parse_packet(&buf[..len])?;
         match packet {
             protocol::packet::Packet::Advertisement(advertisement_packet) => {
-                debug!("Client: Handling Advertisement packet from {} (hash = {})",
-                        addr, base16::encode_lower(advertisement_packet.hash));
+                debug!("Client: Handling Advertisement packet from {} (hash = {})", addr, base16::encode_lower(advertisement_packet.hash));
 
                 let (hidx, was_inserted) = {
                     let mut merkle_pool = self.merkle_pool.lock().await;
@@ -249,20 +232,23 @@ impl Client {
                     let mut desired_hashes = self.desired_hashes.lock().await;
                     desired_hashes.push(hidx);
                 }
-            },
+            }
 
             protocol::packet::Packet::Metadata(metadata_packet) => {
-                debug!("Client: Handling Manifest packet from {} for data {} of manifest {}",
-                        addr,base16::encode_lower(metadata_packet.data_hash),
-                        base16::encode_lower(metadata_packet.manifest_hash));
+                debug!(
+                    "Client: Handling Manifest packet from {} for data {} of manifest {}",
+                    addr,
+                    base16::encode_lower(metadata_packet.data_hash),
+                    base16::encode_lower(metadata_packet.manifest_hash)
+                );
 
                 // Collect all new known hashes
                 let mut merkle_pool = self.merkle_pool.lock().await;
-                let (manifest_hidx,  manifest_hidx_new)   = merkle_pool.pool(metadata_packet.manifest_hash);
-                let (data_hidx,      _data_hidx_new)      = merkle_pool.pool(metadata_packet.data_hash);
+                let (manifest_hidx, manifest_hidx_new) = merkle_pool.pool(metadata_packet.manifest_hash);
+                let (data_hidx, _data_hidx_new) = merkle_pool.pool(metadata_packet.data_hash);
                 let (extrameta_hidx, _extrameta_hidx_new) = merkle_pool.pool(metadata_packet.extra_metadata_hash);
-                merkle_pool.node_mut( manifest_hidx).is_manifest_root = true;
-                merkle_pool.node_mut(     data_hidx).is_data_root = true;
+                merkle_pool.node_mut(manifest_hidx).is_manifest_root = true;
+                merkle_pool.node_mut(data_hidx).is_data_root = true;
                 merkle_pool.node_mut(extrameta_hidx).is_extrameta_root = true;
                 // drop(merkle_pool); // unlock
 
@@ -272,9 +258,9 @@ impl Client {
                     desired_hashes.push(manifest_hidx);
                 }
 
-                if let protocol::packet::MetadataPacketData::FileMetadata{
-                            merkle_tree_depth, size_bits, size, name_length, name }
-                        = metadata_packet.data {
+                if let protocol::packet::MetadataPacketData::FileMetadata { merkle_tree_depth, size_bits, size, name_length, name } =
+                    metadata_packet.data
+                {
                     let merkle_tree_depth = u8::from_be(merkle_tree_depth);
                     // TODO: reject if merkle_tree_depth is too high
                     let num_leaves = 1 << (merkle_tree_depth as usize);
@@ -282,14 +268,17 @@ impl Client {
                     let mut file_states = self.file_states.lock().await;
                     if file_states.get(&data_hidx).is_none() {
                         let leaf_hashes = vec![self.empty_chunk_hidx; num_leaves].into_boxed_slice();
-                        let file_state = file_states.entry(data_hidx).insert_entry(FileState {
-                            size: 0, //TODO
-                            name: Box::from(name), //TODO: name_length relevant?
-                            merkle_tree_height: merkle_tree_depth,
-                            leaf_hashes,
-                            leaf_hashes_correct: false,
-                            leaves_complete: false,
-                        }).into_mut();
+                        let file_state = file_states
+                            .entry(data_hidx)
+                            .insert_entry(FileState {
+                                size: 0,               //TODO
+                                name: Box::from(name), //TODO: name_length relevant?
+                                merkle_tree_height: merkle_tree_depth,
+                                leaf_hashes,
+                                leaf_hashes_correct: false,
+                                leaves_complete: false,
+                            })
+                            .into_mut();
 
                         // leaves might already be complete (if file is empty)
                         file_state.update_leaf_hashes_correct(&merkle_pool);
@@ -305,21 +294,19 @@ impl Client {
                 // ==> compute whole merkle tree every time, by ordering by hash, and check if root hash is correct
 
                 // TODO: tell data collector about new data
-            },
+            }
 
             protocol::packet::Packet::RequestLeaves(request_leaves_packet) => {
                 // Only server needs to handle this
-                debug!("Client: Ignoring RequestLeaves packet from {} for root hash {}",
-                        addr, base16::encode_lower(request_leaves_packet.root_hash));
+                debug!("Client: Ignoring RequestLeaves packet from {} for root hash {}", addr, base16::encode_lower(request_leaves_packet.root_hash));
                 //TODO: don't ignore, but use for deduplication
-            },
+            }
 
             protocol::packet::Packet::RequestLeaf(request_leaf_packet) => {
                 // Only server needs to handle this
-                debug!("Client: Ignoring RequestLeaf packet from {} for root hash {}",
-                        addr, base16::encode_lower(request_leaf_packet.root_hash));
+                debug!("Client: Ignoring RequestLeaf packet from {} for root hash {}", addr, base16::encode_lower(request_leaf_packet.root_hash));
                 //TODO: don't ignore, but use for deduplication
-            },
+            }
 
             protocol::packet::Packet::Data(data_packet) => {
                 let len = data_packet.length; // this is not big endian, I think (kinda awkward to convert here, btw...)
@@ -329,8 +316,8 @@ impl Client {
                 let packet_idx = u32::from_be(data_packet.packet_index);
 
                 let server_ip6 = match addr {
-                    SocketAddr::V4(addr_ip4) => { addr_ip4.ip().to_ipv6_mapped() },
-                    SocketAddr::V6(addr_ip6) => { *addr_ip6.ip() },
+                    SocketAddr::V4(addr_ip4) => addr_ip4.ip().to_ipv6_mapped(),
+                    SocketAddr::V6(addr_ip6) => *addr_ip6.ip(),
                 };
 
                 // Update feedback state of server
@@ -338,8 +325,7 @@ impl Client {
                 {
                     let mut feedback_states = self.feedback_states.lock().await;
                     if let Some(feedback_state) = feedback_states.get_mut(&server_ip6) {
-                        feedback_state.num_packets_received_in_window =
-                                u16::saturating_add(feedback_state.num_packets_received_in_window, 1);
+                        feedback_state.num_packets_received_in_window = u16::saturating_add(feedback_state.num_packets_received_in_window, 1);
                     }
                 }
 
@@ -360,12 +346,10 @@ impl Client {
 
                     // Update file's leaf hashes
                     if leaf_idx >= file_state.leaf_hashes.len() {
-                        warn!("Got leaf index in Data packet that is out of bounds: {} >= {}",
-                                leaf_idx, file_state.leaf_hashes.len());
+                        warn!("Got leaf index in Data packet that is out of bounds: {} >= {}", leaf_idx, file_state.leaf_hashes.len());
                         return Ok(());
                     }
-                    if !file_state.leaf_hashes_correct &&
-                            file_state.leaf_hashes[leaf_idx] != leaf_hidx {
+                    if !file_state.leaf_hashes_correct && file_state.leaf_hashes[leaf_idx] != leaf_hidx {
                         file_state.leaf_hashes[leaf_idx] = leaf_hidx;
 
                         // new leaf hash => might have correct hashes now
@@ -378,13 +362,12 @@ impl Client {
                     }
                 }
 
-                let leaf_state = leaf_states.entry(leaf_hidx)
-                    .or_insert(LeafState {
-                        leaf_hash: leaf_hidx,
-                        subtrees_to_notify: Default::default(),
-                        packets: vec![],
-                        is_complete: false,
-                    });
+                let leaf_state = leaf_states.entry(leaf_hidx).or_insert(LeafState {
+                    leaf_hash: leaf_hidx,
+                    subtrees_to_notify: Default::default(),
+                    packets: vec![],
+                    is_complete: false,
+                });
 
                 // Vice versa: make root known to leaf
                 let was_inserted = leaf_state.subtrees_to_notify.insert(st_root_hidx);
@@ -413,18 +396,23 @@ impl Client {
                         }
                     }
                 }
-            },
+            }
 
             protocol::packet::Packet::MerkleTree(merkle_tree_packet) => {
-                debug!("Client: Handling MerkleTree packet from {} for root hash {}",
-                        addr, base16::encode_lower(merkle_tree_packet.root_hash));
+                debug!("Client: Handling MerkleTree packet from {} for root hash {}", addr, base16::encode_lower(merkle_tree_packet.root_hash));
 
                 let depth = usize::from(u8::from_be(merkle_tree_packet.depth));
                 assert!(merkle_tree_packet.nodes.len() == (1 << depth));
 
-                fn binary_tree_size(depth: usize) -> usize { (1 << depth) * 2 - 1 }
-                fn left_child_idx(i: usize) -> usize { i * 2 + 1 }
-                fn right_child_idx(i: usize) -> usize { left_child_idx(i) + 1 }
+                fn binary_tree_size(depth: usize) -> usize {
+                    (1 << depth) * 2 - 1
+                }
+                fn left_child_idx(i: usize) -> usize {
+                    i * 2 + 1
+                }
+                fn right_child_idx(i: usize) -> usize {
+                    left_child_idx(i) + 1
+                }
 
                 // Find data root that matches
                 // (Required, because otherwise we can't compute the merkle tree.)
@@ -435,8 +423,7 @@ impl Client {
                 let root_hidx = if let Some(root_hidx) = root_hidx {
                     root_hidx
                 } else {
-                    debug!("MerkleTree packet root hash is not known: {}",
-                            base16::encode_lower(merkle_tree_packet.root_hash));
+                    debug!("MerkleTree packet root hash is not known: {}", base16::encode_lower(merkle_tree_packet.root_hash));
                     return Ok(());
                 };
                 let full_tree_height = {
@@ -445,8 +432,7 @@ impl Client {
                     if let Some(file_state) = file_state {
                         file_state.merkle_tree_height
                     } else {
-                        debug!("Metadata for MerkleTree packet root hash is not known: {}",
-                                base16::encode_lower(merkle_tree_packet.root_hash));
+                        debug!("Metadata for MerkleTree packet root hash is not known: {}", base16::encode_lower(merkle_tree_packet.root_hash));
                         return Ok(());
                     }
                 };
@@ -470,10 +456,8 @@ impl Client {
                     let idx_begin = if level == 0 { 0 } else { binary_tree_size(level - 1) };
                     let idx_end = binary_tree_size(level);
                     for i_out in idx_begin..idx_end {
-                        tree_hashes[i_out] = combine_hashes(
-                                full_tree_height - level as u8,
-                                &tree_hashes[left_child_idx(i_out)],
-                                &tree_hashes[right_child_idx(i_out)]);
+                        tree_hashes[i_out] =
+                            combine_hashes(full_tree_height - level as u8, &tree_hashes[left_child_idx(i_out)], &tree_hashes[right_child_idx(i_out)]);
                     }
                 }
 
@@ -508,19 +492,19 @@ impl Client {
                         r_node.parent = Some(p_hidx);
                     }
                 }
-            },
+            }
 
             protocol::packet::Packet::FeedbackRequest(feedback_request_packet) => {
-                let req_id = u16::from_be(*feedback_request_packet.request_id);
+                let req_id = feedback_request_packet.request_id;
                 debug!("Client: Handling FeedbackRequest from {} (reqest_id = {})", addr, req_id);
 
                 let server_ip6 = match addr {
-                    SocketAddr::V4(addr_ip4) => { addr_ip4.ip().to_ipv6_mapped() },
-                    SocketAddr::V6(addr_ip6) => { *addr_ip6.ip() },
+                    SocketAddr::V4(addr_ip4) => addr_ip4.ip().to_ipv6_mapped(),
+                    SocketAddr::V6(addr_ip6) => *addr_ip6.ip(),
                 };
-                let timespan_ms = u16::from_be(*feedback_request_packet.timespan);
+                let timespan_ms = feedback_request_packet.timespan;
                 let timespan = std::time::Duration::from_millis(timespan_ms.into());
-                let num_feedbacks_to_send = u16::from_be(*feedback_request_packet.number_of_feedbacks);
+                let num_feedbacks_to_send = feedback_request_packet.number_of_feedbacks;
 
                 if timespan_ms == 0 && num_feedbacks_to_send != 0 {
                     warn!("FeedbackRequest has a timespan of 0 ms, but non-zero packets.");
@@ -530,8 +514,7 @@ impl Client {
                 // rate-limit feedback packets per second
                 let max_feedbacks = u16::try_from(MAX_NUM_FEEDBACK_PACKETS_PER_SEC * u32::from(timespan_ms) / 1000).unwrap_or(u16::MAX);
                 if num_feedbacks_to_send > max_feedbacks {
-                    warn!("FeedbackRequest num feedbacks too big ({}). Range-limiting to {}.",
-                            num_feedbacks_to_send, max_feedbacks);
+                    warn!("FeedbackRequest num feedbacks too big ({}). Range-limiting to {}.", num_feedbacks_to_send, max_feedbacks);
                 }
                 let num_feedbacks_to_send = u16::min(num_feedbacks_to_send, max_feedbacks);
 
@@ -548,23 +531,26 @@ impl Client {
                         feedback_state.num_packets_received_in_window = 0;
                     }
                 } else {
-                    feedback_states.insert(server_ip6, FeedbackState {
-                        last_reqest_id: req_id,
-                        t_request_received: std::time::Instant::now(),
-                        window_duration: timespan,
-                        num_feedbacks_to_send,
-                        num_feedbacks_sent: 0,
-                        num_packets_received_in_window: 0,
-                        t_next_send: None,
-                    });
+                    feedback_states.insert(
+                        server_ip6,
+                        FeedbackState {
+                            last_reqest_id: req_id,
+                            t_request_received: std::time::Instant::now(),
+                            window_duration: timespan,
+                            num_feedbacks_to_send,
+                            num_feedbacks_sent: 0,
+                            num_packets_received_in_window: 0,
+                            t_next_send: None,
+                        },
+                    );
                 }
-            },
+            }
 
             protocol::packet::Packet::Feedback(feedback_packet) => {
                 // Only server needs to handle this. And feedback packets are not
                 // deduplicated.
                 debug!("Client: Ignoring feedback packet from {} for {}", addr, base16::encode_lower(feedback_packet.server_ip));
-            },
+            }
         }
 
         Ok(())
@@ -597,8 +583,9 @@ impl Client {
                 } else {
                     // send randomly within the timeslot
                     let interval = feedback_state.window_duration.as_secs_f32() / f32::from(feedback_state.num_feedbacks_to_send);
-                    let t_next_send = feedback_state.t_request_received + std::time::Duration::from_secs_f32(
-                            interval * (f32::from(feedback_state.num_feedbacks_sent) + rand::random_range(0.0..1.0))
+                    let t_next_send = feedback_state.t_request_received
+                        + std::time::Duration::from_secs_f32(
+                            interval * (f32::from(feedback_state.num_feedbacks_sent) + rand::random_range(0.0..1.0)),
                         );
                     feedback_state.t_next_send = Some(t_next_send);
                     t_next_send
@@ -610,13 +597,12 @@ impl Client {
                     let window_timespan_ms = feedback_state.window_duration.as_millis() as u64;
                     let packet_idx = (u16::MAX as u64) * time_since_ms / window_timespan_ms;
 
-                    let feedback_packet =
-                        protocol::packet::Packet::Feedback(protocol::packet::FeedbackPacket{
-                            request_id: &u16::to_be(feedback_state.last_reqest_id),
-                            packet_index: &u16::to_be(packet_idx as u16),
-                            number_of_packets_received: &u16::to_be(feedback_state.num_packets_received_in_window),
-                            server_ip: &server_ip.octets(),
-                        });
+                    let feedback_packet = protocol::packet::Packet::Feedback(protocol::packet::FeedbackPacket {
+                        request_id: feedback_state.last_reqest_id,
+                        packet_index: packet_idx as u16,
+                        number_of_packets_received: feedback_state.num_packets_received_in_window,
+                        server_ip: &server_ip.octets(),
+                    });
                     self.socket.send_to(&protocol::encode_packet(feedback_packet)?, (self.multicast_addr, self.multicast_port)).await?;
                     debug!("Sent feedback packet for {}", server_ip);
 

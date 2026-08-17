@@ -16,7 +16,7 @@
 #   topo2-a-<seed>-n<nReceivers>: p = q ~ U(0, 0.1)
 #   topo2-b-<seed>-n<nReceivers>: p ~ U(0, 0.1), q ~ U(0.05, 0.2)
 #   topo3-<seed> (fixed 9-receiver structure, independent of nReceivers)
-{ pkgs, nixnet, oh-go }:
+{ pkgs, nixnet, oh-go, oh-rs }:
 let
   inherit (pkgs) lib;
 
@@ -35,7 +35,8 @@ let
   # How the sender and the receivers are invoked, shared by all topologies.
   mcastAddr = "239.1.1.1";
   mcastPort = "5000";
-  senderCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
+  #senderCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
+  senderCmd = { iface }: "${oh-rs}/bin/oh-rs -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
   receiverCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} .";
 
   # --- seeded pseudo-randomness --------------------------------------------

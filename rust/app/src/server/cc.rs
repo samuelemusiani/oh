@@ -8,7 +8,7 @@ use log::debug;
 use tokio::sync::{Mutex, RwLock};
 
 static MIN_RATE: u64 = 10000; // Minimum rate in bytes per second
-static START_RATE: u64 = 10000000; // Start rate in bytes per second 
+static START_RATE: u64 = 10000; // Start rate in bytes per second 
 static MAX_RATE: u64 = 100000000000; // Maximum rate in bytes per second
 pub static FEEDBACK_COUNT: u16 = 10; // Number of feedback packets to request per feedback request packet
 pub static FEEDBACK_TIMESPAN: u16 = 500; // Time span in milliseconds to request feedback for
@@ -53,7 +53,7 @@ impl CongestionControl {
         loss_rates.push(loss_rate);
     }
     pub fn get_feedback_id(&self) -> u16 {
-        self.feedback_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        self.feedback_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
     }
 
     pub async fn adjust_rate(&self) {
@@ -78,8 +78,10 @@ impl CongestionControl {
         }
         let mut rate = self.rate.write().await;
         if loss_rate > LOSS_RATE_THRESHOLD {
+            debug!("Decreasing sending rate");
             *rate = std::cmp::max((*rate as f64 * (1.0 - loss_rate)) as u64, MIN_RATE);
         } else {
+            debug!("Increasing sending rate");
             if self.successful_increases.load(std::sync::atomic::Ordering::Relaxed) > 10 {
                 *rate = std::cmp::min((*rate as f64 * 1.5) as u64, MAX_RATE);
             } else {

@@ -17,16 +17,11 @@ const TARGET_PAYLOAD_SIZE: usize = 1400;
 const PACKETS_PER_CHUNK: usize = 16;
 
 pub fn combine_hashes(level: u8, left_hash: &Hash, right_hash: &Hash) -> Hash {
-    return Sha256::new()
-        .chain_update(level.as_bytes())
-        .chain_update(left_hash)
-        .chain_update(right_hash)
-        .finalize()
-        .into();
+    return Sha256::new().chain_update(level.as_bytes()).chain_update(left_hash).chain_update(right_hash).finalize().into();
 }
 
 pub fn hash_empty_chunk() -> Hash {
-    hash_chunk(&[])
+    hash_chunk(&[0u8])
 }
 
 pub fn hash_chunk(chunk_data: &[u8]) -> Hash {
@@ -40,7 +35,7 @@ pub fn hash_chunk(chunk_data: &[u8]) -> Hash {
 
 pub fn hash_chunk_from_iter<'a, It>(chunk_data: It) -> Hash
 where
-    It: IntoIterator<Item = &'a [u8]>
+    It: IntoIterator<Item = &'a [u8]>,
 {
     let mut hasher = Sha256::new();
     hasher.update(0u8.as_bytes());
@@ -165,16 +160,20 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
             leaves.iter().map(|leaf| Box::new(MerkleNode { hash: leaf.merkle_hash(), left: None, right: None })).collect();
         let padding_needed = Self::next_power_of_two(intermediate_hashes.len()) - intermediate_hashes.len();
         for _ in 0..padding_needed {
-            let empty_node = Box::new(MerkleNode { hash: empty_hash.clone().try_into().unwrap(), left: None, right: None });
+            let empty_node = Box::new(MerkleNode { hash: empty_hash.clone(), left: None, right: None });
             intermediate_hashes.push(empty_node);
+        }
+
+        let mut hash_collection: HashSet<Hash> = HashSet::new();
+        hash_collection.extend(intermediate_hashes.iter().map(|node| node.hash));
+        if leaves.len() == 1 {
+            return Ok(Self { hash_collection, leaves, extra_data, tree_node: intermediate_hashes.pop().unwrap() });
         }
         assert!(
             intermediate_hashes.len() % 2 == 0,
             "Merkle tree construction failed: number of leaves is not a power of two after padding, was {}",
             intermediate_hashes.len()
         );
-        let mut hash_collection: HashSet<Hash> = HashSet::new();
-        hash_collection.extend(intermediate_hashes.iter().map(|node| node.hash));
         while intermediate_hashes.len() > 1 {
             let mut next_level_hashes = Vec::new();
             while !intermediate_hashes.is_empty() {
@@ -182,11 +181,7 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
                     let left_node = intermediate_hashes.remove(0);
                     let right_node = intermediate_hashes.remove(0);
                     let parent_hash = combine_hashes(level, &left_node.hash, &right_node.hash);
-                    next_level_hashes.push(Box::new(MerkleNode {
-                        hash: parent_hash,
-                        left: Some(left_node),
-                        right: Some(right_node),
-                    }));
+                    next_level_hashes.push(Box::new(MerkleNode { hash: parent_hash, left: Some(left_node), right: Some(right_node) }));
                 } else {
                     panic!("Merkle tree construction failed: odd number of nodes at level {}", level);
                 }
@@ -236,18 +231,14 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
     }
 
     pub fn get_leaf_from_node(&self, node: &Box<MerkleNode>) -> Option<&T> {
-        if node.is_leaf() {
-            self.leaves.iter().find(|leaf| leaf.merkle_hash() == node.hash)
-        } else {
-            None
-        }
+        if node.is_leaf() { self.leaves.iter().find(|leaf| leaf.merkle_hash() == node.hash) } else { None }
     }
 
     fn next_power_of_two(n: usize) -> usize {
         let mut n = n;
         if n <= 1 {
             // While the next power of two of 1 is 1, we want to return 2 for our use case since we need the amount of padding to be devisible by 2
-            return 2;
+            return 1;
         }
         n -= 1;
         n |= n >> 1;
@@ -331,7 +322,7 @@ impl FileMetadata {
             },
         };
         let encoded_packet = encode_packet(Packet::Metadata(metadata_packet))?;
-        Ok(Self { name: filename, data_tree, hash: hash_chunk(&encoded_packet) })
+        Ok(Self { name: filename, data_tree, hash: hash_chunk(&encoded_packet[2..]) })
     }
 }
 
@@ -356,7 +347,7 @@ mod tests {
     use zerocopy::IntoBytes;
 
     use crate::Hash;
-    use crate::data::MerkleHash;
+    use crate::data::{MerkleHash, combine_hashes, hash_chunk};
 
     struct TestLeaf {
         hash: Hash,
@@ -446,5 +437,21 @@ mod tests {
         for (node, expected_hash) in depth_2_nodes.iter().zip(expected_hashes.iter()) {
             assert_eq!(node.hash(), expected_hash);
         }
+    }
+
+    #[tokio::test]
+    async fn test_merkle_tree_hashes() {
+        let leaves = vec![TestLeaf::new_with_number(1), TestLeaf::new_with_number(2)];
+        let tree = crate::data::MerkleTree::new(leaves, ()).await.unwrap();
+        let leaves = vec![TestLeaf::new_with_number(1), TestLeaf::new_with_number(2)];
+        let expected_root_hash = combine_hashes(1, &leaves[0].hash, &leaves[1].hash);
+        assert_eq!(*tree.root_hash(), expected_root_hash);
+        let leaves = vec![TestLeaf::new_with_number(1), TestLeaf::new_with_number(2), TestLeaf::new_with_number(3), TestLeaf::new_with_number(4)];
+        let tree = crate::data::MerkleTree::new(leaves, ()).await.unwrap();
+        let leaves = vec![TestLeaf::new_with_number(1), TestLeaf::new_with_number(2), TestLeaf::new_with_number(3), TestLeaf::new_with_number(4)];
+        let l2l = combine_hashes(1, &leaves[0].hash, &leaves[1].hash);
+        let l2r = combine_hashes(1, &leaves[2].hash, &leaves[3].hash);
+        let expected_root_hash = combine_hashes(2, &l2l, &l2r);
+        assert_eq!(*tree.root_hash(), expected_root_hash);
     }
 }

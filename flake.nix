@@ -7,7 +7,7 @@
       oh-rs = pkgs.callPackage ./rust { craneLib = (crane.mkLib pkgs); };
     in {
       packages =
-        import ./nix/topologies.nix { inherit pkgs nixnet oh-go; }
+        import ./nix/topologies.nix { inherit pkgs nixnet oh-go oh-rs; }
         // { inherit oh-go oh-rs; };
       devShells.default = pkgs.mkShell {
         strictDeps = true;
