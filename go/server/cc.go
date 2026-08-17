@@ -113,7 +113,7 @@ func (s *Server) handleFeedback(f *packet.Feedback, src net.IP) {
 	// TODO: Check that server IP is current IP :)
 	// TODO: Check if request id make sense (is up to date with what we sent)
 	if f.RequestID != s.latestID {
-		s.l.Warn("ignoring feedback. IDs don't match", "request_id", f.RequestID, "server_id", s.latestID)
+		s.l.Debug("ignoring feedback. IDs don't match", "request_id", f.RequestID, "server_id", s.latestID)
 		return
 	}
 

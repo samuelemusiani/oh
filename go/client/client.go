@@ -41,6 +41,11 @@ type mtType struct {
 	t  typeMerkleTree
 }
 
+type filePlusIndex struct {
+	f     *file
+	index uint32
+}
+
 type Client struct {
 	config        oh.Config
 	multicastConn *internal.Multicast
@@ -55,6 +60,9 @@ type Client struct {
 	metadataBuffMutex sync.Mutex
 	filesMap          map[[32]byte]*file
 	filesMapMutex     sync.Mutex
+
+	reRequestHashBuff      map[[32]byte]filePlusIndex
+	reRequestHashBuffMutex sync.RWMutex
 
 	trees         map[[32]byte]mtType
 	treesMapMutex sync.Mutex
@@ -92,6 +100,8 @@ func New(c oh.Config) (*Client, error) {
 		metadataBuff: make(map[[32]byte][]*packet.Metadata),
 		filesMap:     make(map[[32]byte]*file),
 		trees:        make(map[[32]byte]mtType),
+
+		reRequestHashBuff: make(map[[32]byte]filePlusIndex),
 
 		sendCh:    make(chan packet.Message, 1024),
 		receiveCh: make(chan packet.MessageWithSrc, 1024),
@@ -341,19 +351,42 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 
 		c.filesMapMutex.Lock()
 		f, ok := c.filesMap[data.RootHash]
-		if !ok {
-			// TODO: Remove
-			panic(fmt.Sprintf("received data packet for unknown file: %s", fh))
-		}
 		c.filesMapMutex.Unlock()
+		var FpI filePlusIndex
+		var foundFpI bool
+		if !ok {
+			c.reRequestHashBuffMutex.RLock()
+			FpI, foundFpI = c.reRequestHashBuff[data.RootHash]
+			c.reRequestHashBuffMutex.RUnlock()
+			if !foundFpI {
+				//received data packet for unknown file
+				return nil
+			}
+			// Found the file :)
+			f = FpI.f
+		}
 
 		if f.isFinished {
 			return nil
 		}
 
+		var chunkIndex uint32
+		if !foundFpI {
+			absIndexes, err := f.mt.GetAbsoluteLevesIndexesFromRootHash(data.RootHash[:])
+			if err != nil {
+				panic(fmt.Sprintf("could not get abs indexes from root hash %s: %s", htos(data.RootHash), err.Error()))
+			}
+			if len(absIndexes) == 0 {
+				panic("absIndexes has length 0")
+			}
+			chunkIndex = data.LeafIndex + absIndexes[0]
+		} else {
+			chunkIndex = FpI.index
+		}
+
 		f.dataChan <- &dataInChunk{
 			chunkHash:   data.LeafHash,
-			chunkID:     data.LeafIndex,
+			chunkID:     chunkIndex,
 			packetIndex: data.PacketIndex,
 			data:        data.Data,
 		}
