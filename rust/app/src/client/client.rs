@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 
 use crate::client::merkle_pool::*;
 use crate::error::AppError;
-// use protocol::Hash;
-use protocol::data::{hash_chunk_from_iter, hash_empty_chunk, build_merkle_tree};
+use protocol::Hash;
+use protocol::data::{hash_chunk_from_iter, hash_empty_chunk, build_merkle_tree, hash_encoded_metadata_packet};
 
 // TODO: Not yet implemented:
 // * requesting manifests
@@ -40,6 +40,7 @@ struct FeedbackState {
 }
 
 struct FileState {
+    root_hash: MerklePoolIdx,
     // Value from server. Might be incorrect.
     #[allow(dead_code)]
     size: usize,
@@ -65,7 +66,15 @@ impl FileState {
             return;
         }
 
-        // TODO: build merkle tree and check if correct
+        // build merkle tree
+        let leaf_hashes: Box<[Hash]> =
+            self.leaf_hashes.iter()
+            .map(|hidx| merkle_pool.node(*hidx).hash)
+            .collect();
+        let merkle_tree = build_merkle_tree(self.merkle_tree_height, &leaf_hashes, 0);
+
+        // check if correct
+        self.leaf_hashes_correct = merkle_tree[0] == merkle_pool.node(self.root_hash).hash;
 
         if self.leaf_hashes_correct {
             debug!("Got correct leaf hashes for file {}", str::from_utf8(&self.name).unwrap_or("invalid utf8"));
@@ -123,6 +132,43 @@ impl LeafState {
     }
 }
 
+struct ManifestState {
+    root_hash: MerklePoolIdx,
+    leaf_hashes: HashSet<MerklePoolIdx>,
+    is_complete: bool,
+}
+
+impl ManifestState {
+    fn update_is_complete(&mut self, merkle_pool: &MerklePool) {
+        if self.is_complete {
+            return;
+        }
+
+        if self.leaf_hashes.len() == 0 {
+            return; //TODO: do we support empty manifests?
+        }
+
+        // build merkle tree
+        let mut leaf_hashes_sorted: Box<[Hash]> =
+            self.leaf_hashes.iter()
+            .map(|hidx| merkle_pool.node(*hidx).hash)
+            .collect();
+        leaf_hashes_sorted.sort_unstable(); //TODO: sorted correctly?
+
+        let merkle_tree_height = leaf_hashes_sorted.len().next_power_of_two().ilog2() as u8;
+
+        let merkle_tree = build_merkle_tree(merkle_tree_height, &leaf_hashes_sorted, 0);
+
+        // check if correct
+        let root_hash = &merkle_pool.node(self.root_hash).hash;
+        self.is_complete = merkle_tree[0] == *root_hash;
+
+        if self.is_complete {
+            debug!("Manifest {} is complete.", base16::encode_lower(root_hash));
+        }
+    }
+}
+
 // lock order of fields with locks is in delcaration order in struct
 pub struct Client {
     socket: UdpSocket,
@@ -141,6 +187,7 @@ pub struct Client {
     // TODO: should store manifest hashes separately, as they're higher priority (might even request when there's ongoing traffic)
     // TODO: should also give up after N times for manifest hashes (unless it's seen again)
     desired_hashes: Mutex<Vec<MerklePoolIdx>>,
+    manifest_states: Mutex<HashMap<MerklePoolIdx, ManifestState>>,
     file_states: Mutex<HashMap<MerklePoolIdx, FileState>>,
     leaf_states: Mutex<HashMap<MerklePoolIdx, LeafState>>,
 }
@@ -195,6 +242,7 @@ impl Client {
             empty_chunk_hidx,
             feedback_states: Default::default(),
             desired_hashes: Default::default(),
+            manifest_states: Default::default(),
             file_states: Default::default(),
             leaf_states: leaf_states.into(),
         })
@@ -233,18 +281,28 @@ impl Client {
         debug!("Client: Handling Advertisement packet from {} (hash = {})",
                 addr, base16::encode_lower(advertisement_packet.hash));
 
-        let (hidx, was_inserted) = {
-            let mut merkle_pool = self.merkle_pool.lock().await;
-            let (hidx, was_inserted) = merkle_pool.pool(advertisement_packet.hash);
-            merkle_pool.node_mut(hidx).is_manifest_root = true;
-            (hidx, was_inserted)
-        };
+        let mut merkle_pool = self.merkle_pool.lock().await;
+        let (root_hidx, root_hash_was_inserted) = merkle_pool.pool(advertisement_packet.hash);
+        merkle_pool.node_mut(root_hidx).is_manifest_root = true;
 
-        if was_inserted {
+        if root_hash_was_inserted { // TODO: remove this stupid thing. having seen the hash before does not imply it was advertised before
             // did not see before ==> desire it
             // (We desire any Manifest, to find out what files are offered.)
             let mut desired_hashes = self.desired_hashes.lock().await;
-            desired_hashes.push(hidx);
+            desired_hashes.push(root_hidx);
+        }
+
+        let mut manifest_states = self.manifest_states.lock().await;
+        if manifest_states.get(&root_hidx).is_none() {
+            let manifest_state = manifest_states.entry(root_hidx)
+                .insert_entry(ManifestState {
+                    root_hash: root_hidx,
+                    leaf_hashes: Default::default(),
+                    is_complete: false,
+                })
+                .into_mut();
+
+            manifest_state.update_is_complete(&merkle_pool); // (can be true only if manifest is empty)
         }
 
         return Ok(());
@@ -254,7 +312,8 @@ impl Client {
             &self,
             metadata_packet: &protocol::packet::MetadataPacket<'_>,
             addr: SocketAddr,
-            _packet_len: usize
+            _packet_len: usize,
+            leaf_hash: Hash
         ) -> Result<(), AppError>
     {
         debug!(
@@ -278,6 +337,24 @@ impl Client {
             // Oho, a new manifest that we don't know about.
             let mut desired_hashes = self.desired_hashes.lock().await;
             desired_hashes.push(manifest_hidx);
+        }
+
+        // Update completedness of the manifest
+        {
+            let mut manifest_states = self.manifest_states.lock().await;
+            let manifest_state = manifest_states.entry(manifest_hidx)
+                .or_insert(ManifestState {
+                    root_hash: manifest_hidx,
+                    leaf_hashes: Default::default(),
+                    is_complete: false,
+                });
+
+            let (leaf_hidx, _) = merkle_pool.pool(&leaf_hash);
+            let is_new_leaf_hash = manifest_state.leaf_hashes.insert(leaf_hidx);
+
+            if is_new_leaf_hash {
+                manifest_state.update_is_complete(&merkle_pool);
+            }
         }
 
         if let protocol::packet::MetadataPacketData::FileMetadata { merkle_tree_depth, size_bits, size, name_length, name } =
@@ -317,6 +394,7 @@ impl Client {
                 let file_state = file_states
                     .entry(data_hidx)
                     .insert_entry(FileState {
+                        root_hash: data_hidx,
                         size: size.unwrap_or(usize::MAX),
                         name: Box::from(name),
                         merkle_tree_height: merkle_tree_depth,
@@ -335,9 +413,6 @@ impl Client {
                 }
             }
         }
-
-        //TODO: how to tell if whole manifest is received?
-        // ==> compute whole merkle tree every time, by ordering by hash, and check if root hash is correct
 
         // TODO: tell data collector about new data
 
@@ -642,7 +717,8 @@ impl Client {
                 return self.handle_packet_advertisement(&advertisement_packet, addr, len).await;
             }
             protocol::packet::Packet::Metadata(metadata_packet) => {
-                return self.handle_packet_metadata(&metadata_packet, addr, len).await;
+                let leaf_hash = hash_encoded_metadata_packet(&mut buf.clone());
+                return self.handle_packet_metadata(&metadata_packet, addr, len, leaf_hash).await;
             }
             protocol::packet::Packet::RequestLeaves(request_leaves_packet) => {
                 return self.handle_packet_request_leaves(&request_leaves_packet, addr, len).await;

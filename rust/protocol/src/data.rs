@@ -45,6 +45,18 @@ where
     return hasher.finalize().into();
 }
 
+pub fn hash_encoded_metadata_packet_root0(encoded_packet: &[u8]) -> Hash {
+    return hash_chunk(&encoded_packet[2..]);
+}
+
+pub fn hash_encoded_metadata_packet(encoded_packet: &mut [u8]) -> Hash {
+    // set manifest root hash to 0
+    for i in 2..(2+32) {
+        encoded_packet[i] = 0;
+    }
+    return hash_encoded_metadata_packet_root0(encoded_packet);
+}
+
 // Builds a merkle tree from the hashes of the leaves.
 // leaf_hashes can be inner nodes, to build the upper part of the merkle tree. You
 // have to set levels_below_leaves to a non-0 value in this case.
@@ -373,7 +385,7 @@ impl FileMetadata {
             },
         };
         let encoded_packet = encode_packet(Packet::Metadata(metadata_packet))?;
-        Ok(Self { name: filename, data_tree, hash: hash_chunk(&encoded_packet[2..]) })
+        Ok(Self { name: filename, data_tree, hash: hash_encoded_metadata_packet_root0(&encoded_packet) })
     }
 }
 
