@@ -336,7 +336,6 @@ func (s *scheduler) sortLeavesRequests() {
 							s.l.Debug("d3", "leavesIndexes", leavesIndexes, "len", len(file.chunks))
 							break
 						}
-						s.l.Debug("Constructing chunk packets for file", "file", file.name, "blob_index", i)
 						pkts, err := file.ChunkPacketWithSubtree(uint64(i), r.r.Hash, uint32(j))
 						if err != nil {
 							s.l.Error("error creating chunk packet", "file", file.name, "blob_index", i, "error", err)

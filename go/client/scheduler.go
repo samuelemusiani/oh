@@ -249,7 +249,10 @@ func (s *scheduler) mtRequestor(toRequest chan *merkletree.MerkleTree, requestor
 			queryNextHashOrAdvance()
 
 		case h := <-requestorChan:
-			if currentMT != nil && *currentHash == h {
+			s.client.reRequestHashBuffMutex.RLock()
+			f, ok := s.client.reRequestHashBuff[h]
+			s.client.reRequestHashBuffMutex.RUnlock()
+			if currentMT != nil && (*currentHash == h || (ok && slices.Equal(f.f.mt.Root(), currentMT.Root()))) {
 				// Received a packet for the current hash, reset the timer
 				timer.Reset(reRequestTime)
 			}

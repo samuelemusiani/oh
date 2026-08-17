@@ -299,7 +299,7 @@ func (ch *chunkHandler) writeChunk(c *Client, id uint32) error {
 	if ok {
 		if !slices.Equal(currentQeryH, nextHashToQuery) {
 			fmt.Println("signaling file complete", htos([32]byte(currentQeryH)))
-			c.scheduler.signalFileComplete([32]byte(currentQeryH))
+			go c.scheduler.signalFileComplete([32]byte(currentQeryH))
 		}
 	}
 	c.treesMapMutex.Unlock()
@@ -435,6 +435,8 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 
 	cHandler.findTotalSize(c)
 
+	file := c.filesMap[hf]
+
 	// This can go in a separate routing
 	go func() {
 		for {
@@ -448,15 +450,22 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 				// the last chunk block and we finish it (?).
 				panic("if timer has fired we must have the chunksInfo")
 			}
-			chInfo.reRequest.Reset(timeoutPartialChunkRequest)
+			chInfo.reRequest.Reset(2 * timeoutPartialChunkRequest)
 			// We can request the chunk again, by hash :)
+
+			c.reRequestHashBuffMutex.RLock()
+			_, ok = c.reRequestHashBuff[chInfo.hash]
+			c.reRequestHashBuffMutex.RUnlock()
+			if !ok {
+				c.reRequestHashBuffMutex.Lock()
+				c.reRequestHashBuff[chInfo.hash] = filePlusIndex{f: file, index: chunkID}
+				c.reRequestHashBuffMutex.Unlock()
+			}
 
 			c.l["file"].Debug("timeout waiting for finishing chunk for file", "file_hash", htos(hf), "chunk_hash", htos(chInfo.hash))
 			go c.scheduler.reRequest(chInfo.hash)
 		}
 	}()
-
-	file := c.filesMap[hf]
 
 	go func() {
 		for {
@@ -476,6 +485,7 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 	go func() {
 		for {
 			<-cHandler.timer.C
+			defer cHandler.timer.Reset(timeoutMissingChunkRequest)
 			// This timer should fire when we receive up to k chunks but we need n chunks
 			// (where k < n) to complete the file. So basically it's used to request
 			// again the chunks that we completly didn't receive are at the end of
@@ -526,15 +536,13 @@ func (c *Client) chunkHandlerForFile(hf [32]byte) {
 					break
 				}
 
-				c.l["file"].Debug("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
+				c.l["file"].Error("requesting missing chunk for file", "file_hash", htos(hf), "chunk_id", i)
 				go c.scheduler.requestLeafByIndex(hf, uint32(i))
 				leavesToRequest++
 				if leavesToRequest >= 8 {
 					break
 				}
 			}
-
-			cHandler.timer.Reset(timeoutMissingChunkRequest)
 		}
 	}()
 
