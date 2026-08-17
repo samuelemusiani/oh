@@ -351,6 +351,7 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 
 		c.filesMapMutex.Lock()
 		f, ok := c.filesMap[data.RootHash]
+		c.filesMapMutex.Unlock()
 		var FpI filePlusIndex
 		var foundFpI bool
 		if !ok {
@@ -359,13 +360,11 @@ func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 			c.reRequestHashBuffMutex.RUnlock()
 			if !foundFpI {
 				//received data packet for unknown file
-				c.filesMapMutex.Unlock()
 				return nil
 			}
 			// Found the file :)
 			f = FpI.f
 		}
-		c.filesMapMutex.Unlock()
 
 		if f.isFinished {
 			return nil
