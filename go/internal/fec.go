@@ -193,15 +193,8 @@ func (d *FECDecoder) Run(recv <-chan PacketWithSrc, send chan<- packet.MessageWi
 		if len(b.buff) >= d.fec.BlockSize()+d.fec.RepairCount() {
 			d.l.Debug("received enough packets to decode FEC block", "blockID", blockID)
 			// We have received enough packets to decode the block, we can stop the timer
-			if !b.timer.Stop() {
-				// If the timer already expired, we need to drain the channel to prevent a leak
-				select {
-				case <-b.timer.C:
-				default:
-				}
-				// We also need to cancel the context to prevent goroutines waiting on the timer from leaking
-				b.cancel()
-			}
+			b.timer.Stop()
+			b.cancel()
 			blockChan <- blockID
 		}
 		return nil

@@ -2,7 +2,6 @@ package server
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"math"
@@ -204,12 +203,6 @@ func (s *Server) sendLoop() {
 		for i := range batch {
 			printBytesSent.Add(uint64(len(batch[i])))
 			graphChan <- uint64(len(batch[i]))
-		}
-
-		for i := range batch {
-			if batch[i][1] == 4 {
-				fmt.Println("type: ", batch[i][1], "chunk_id", binary.BigEndian.Uint32(batch[i][66:70]))
-			}
 		}
 
 		bytesToSend = 0
