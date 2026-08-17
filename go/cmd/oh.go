@@ -13,13 +13,13 @@ import (
 )
 
 var (
-	flagSet         = flag.NewFlagSet("oh", flag.ContinueOnError)
-	multicastAddr   = flagSet.String("a", "224.0.3.3", "multicast address")
-	portNumber      = flagSet.Uint("t", 7432, "port number")
-	interfaceName   = flagSet.String("i", "eth0", "network interface to use")
-	serverMode      = flagSet.Bool("s", false, "run in server mode")
-	filesToSend     []string
-	directoryToSave string
+	flagSet       = flag.NewFlagSet("oh", flag.ContinueOnError)
+	multicastAddr = flagSet.String("a", "224.0.3.3", "multicast address")
+	portNumber    = flagSet.Uint("t", 7432, "port number")
+	interfaceName = flagSet.String("i", "eth0", "network interface to use")
+	serverMode    = flagSet.Bool("s", false, "run in server mode")
+	directory     string
+	files         []string
 )
 
 func handleArgs() error {
@@ -53,20 +53,60 @@ func handleArgs() error {
 		if flagSet.NArg() == 0 {
 			return fmt.Errorf("at least one file to send is required")
 		}
-		filesToSend = flagSet.Args()
-		err := checkFilesExist(filesToSend)
+
+		if flagSet.NArg() > 1 { // we are expecting files on CLI
+			files = flagSet.Args()
+			err := checkFilesExist(files)
+			if err != nil {
+				return fmt.Errorf("error checking files: %w", err)
+			}
+		}
+
+		// Just 1 arg
+		fpath := flagSet.Args()[0]
+		stat, err := os.Stat(fpath)
+		if err != nil {
+			return fmt.Errorf("error running stat on path %s: %w", fpath, err)
+		}
+
+		if !stat.IsDir() {
+			files = flagSet.Args()
+			err := checkFilesExist(files)
+			if err != nil {
+				return fmt.Errorf("error checking files: %w", err)
+			}
+
+			return nil
+		}
+
+		// path is a DIR
+		entries, err := os.ReadDir(fpath)
+		if err != nil {
+			return fmt.Errorf("error reading dir: %w", err)
+		}
+
+		for _, e := range entries {
+			if !e.IsDir() {
+				files = append(files, path.Join(fpath, e.Name()))
+			}
+		}
+
+		err = checkFilesExist(files)
 		if err != nil {
 			return fmt.Errorf("error checking files: %w", err)
 		}
-	} else {
-		if flagSet.NArg() != 1 {
-			return fmt.Errorf("directory to save files is required")
-		}
-		directoryToSave = flagSet.Arg(0)
-		err := checkDirectoryExistsAndWritable(directoryToSave)
-		if err != nil {
-			return fmt.Errorf("error checking directory: %w", err)
-		}
+
+		return nil
+	}
+
+	// Client mode
+	if flagSet.NArg() != 1 {
+		return fmt.Errorf("directory to save files is required")
+	}
+	directory = flagSet.Arg(0)
+	err = checkDirectoryExistsAndWritable(directory)
+	if err != nil {
+		return fmt.Errorf("error checking directory: %w", err)
 	}
 
 	return nil
@@ -145,7 +185,7 @@ func runServer() error {
 		return fmt.Errorf("error creating MFTP server: %w", err)
 	}
 
-	err = m.SendFiles(filesToSend)
+	err = m.SendFiles(files)
 	if err != nil {
 		return fmt.Errorf("error sending files: %w", err)
 	}
@@ -163,7 +203,7 @@ func runClient() error {
 		return fmt.Errorf("error creating MFTP client: %w", err)
 	}
 
-	err = c.ReceiveFiles(directoryToSave)
+	err = c.ReceiveFiles(directory)
 	if err != nil {
 		return fmt.Errorf("error receiving files: %w", err)
 	}

@@ -35,11 +35,11 @@ BINARY_SRC  = "./cmd/oh.go"
 DEFAULT_CLIENT_DIR = "/tmp/mftp-received"
 
 # Random file generation defaults
-GEN_FILE_COUNT   = 5
-GEN_FILE_MAX_BYTES = 1024 * 4
-GEN_FILE_STRICY = False # generate files with exactly GEN_FILE_MAX_BYTES if True, otherwise random sizes up to that limit
+GEN_FILE_COUNT   = 1
+GEN_FILE_MAX_BYTES = 1024 * 512 * 4 * 256
+GEN_FILE_STRICY = True # generate files with exactly GEN_FILE_MAX_BYTES if True, otherwise random sizes up to that limit
 
-GEN_FILENAME_LENGTH = 8
+GEN_FILENAME_LENGTH = 10
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 
@@ -157,17 +157,24 @@ def generate_random_files(count: int = GEN_FILE_COUNT) -> tuple[str, list[str]]:
     """
     tmp_dir = tempfile.mkdtemp(prefix="mftp-server-files-")
     files   = []
-    for _ in range(count):
-        name = "".join(random.choices(string.ascii_lowercase, k=GEN_FILENAME_LENGTH)) + ".bin"
+    generated_names = []
+    for i in range(count):
+        while True:
+            name = "".join(random.choices(string.ascii_lowercase + string.digits, k=GEN_FILENAME_LENGTH))
+            if name not in generated_names:
+                generated_names.append(name)
+                break
+
         path = os.path.join(tmp_dir, name)
 
         if GEN_FILE_STRICY:
             size = GEN_FILE_MAX_BYTES
         else:
-            size = random.randint(1, GEN_FILE_MAX_BYTES)
+            size = random.randint(int(GEN_FILE_MAX_BYTES* 80/100), GEN_FILE_MAX_BYTES)
 
         with open(path, "wb") as f:
-            f.write(os.urandom(size))
+            f.write(bytes([i % 256]))
+            f.write(os.urandom(size-1))
         files.append(path)
         info(f"  Generated {name} ({size } B)")
     ok(f"Generated {count} files in {tmp_dir}")
@@ -192,7 +199,7 @@ def build_server_cmd(iface: str, addr: str = None, port: int = None,
         flags += f" -t {port}"
 
     file_args = " ".join(files)
-    return f"{BINARY} {flags} {file_args}", tmp_dir
+    return f"{BINARY} {flags} {tmp_dir}", tmp_dir
 
 def build_client_cmd(iface: str, addr: str = None, port: int = None,
                      save_dir: str = None) -> str:
@@ -301,7 +308,7 @@ def cmd_start_socat(args):
     ns    = NS_SERVER   if side == "server" else NS_CLIENT
 
     socat_cmd = f"socat TCP-LISTEN:{from_port},reuseaddr,fork EXEC:\"ip netns exec {ns} socat STDIO TCP4\\:127.0.0.1\\:{to_port}\""
-    info(f"Forwarding localhost:{from_port} → {NS_SERVER}:127.0.0.1:{to_port}")
+    info(f"Forwarding localhost:{from_port} → {ns}:127.0.0.1:{to_port}")
     info(f"Running: {socat_cmd}")
     try:
         proc = subprocess.Popen(socat_cmd, shell=True)

@@ -1,46 +1,78 @@
 package client
 
 import (
-	"context"
-	"encoding/hex"
+	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
-	"math/rand"
-	"net"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal"
+	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/chunker"
+	merkletree "gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/merkle_tree"
 	"gitlab.lrz.de/protocol-design-ss26-meta-group-1-5/ass2_impl/go/internal/packet"
+
+	// Profiling
+	"net/http"
+	_ "net/http/pprof"
 )
 
 const (
-	fecType = internal.FECTypeSemiNull
-
-	fecWaitTimeout = 500 * time.Millisecond
+	fecType = internal.FECTypeXOR
 )
 
-type MessageWithSrc struct {
-	MSG packet.Message
-	Src net.IP
+var (
+	hashFunc = sha256.New
+)
+
+type typeMerkleTree uint8
+
+const (
+	merkleTreeMetadata = iota
+	merkleTreeFile
+)
+
+type mtType struct {
+	mt *merkletree.MerkleTree
+	t  typeMerkleTree
 }
 
 type Client struct {
 	config        oh.Config
 	multicastConn *internal.Multicast
-	fec           internal.FEC
+	fecDecoder    *internal.FECDecoder
+	fecEncoder    *internal.FECEncoder
+	chunker       *chunker.Chunker
 
 	// Directory to save files to
 	dir string
 
-	sendCh    chan packet.Message
-	receiveCh chan MessageWithSrc
+	metadataBuff      map[[32]byte][]*packet.Metadata
+	metadataBuffMutex sync.Mutex
+	filesMap          map[[32]byte]*file
+	filesMapMutex     sync.Mutex
 
-	l *slog.Logger
+	trees         map[[32]byte]mtType
+	treesMapMutex sync.Mutex
+
+	sendCh    chan packet.Message
+	receiveCh chan packet.MessageWithSrc
+
+	cc cc
+
+	scheduler *scheduler
+
+	l map[string]*slog.Logger
 }
 
 func New(c oh.Config) (*Client, error) {
+	go func() {
+		panic(http.ListenAndServe("127.0.0.1:6060", nil))
+	}()
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	m, err := internal.OpenMulticastConnection(c.Address(), c.Port(), c.Interface())
@@ -48,26 +80,29 @@ func New(c oh.Config) (*Client, error) {
 		return nil, fmt.Errorf("error opening multicast connection: %w", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.TimeKey {
-				return slog.Attr{} // drop it
-			}
-			return a
-		},
-		Level: slog.LevelDebug,
-	}))
+	l := makeLoggers()
 
-	return &Client{
+	client := &Client{
 		config:        c,
 		multicastConn: m,
-		fec:           internal.NewFEC(fecType),
+		fecDecoder:    internal.NewFECDecoder(internal.NewFEC(fecType), l["fec"]),
+		fecEncoder:    internal.NewFECEncoder(internal.NewFEC(fecType), l["fec"]),
+		chunker:       chunker.NewChunker(hashFunc),
+
+		metadataBuff: make(map[[32]byte][]*packet.Metadata),
+		filesMap:     make(map[[32]byte]*file),
+		trees:        make(map[[32]byte]mtType),
 
 		sendCh:    make(chan packet.Message, 1024),
-		receiveCh: make(chan MessageWithSrc, 1024),
+		receiveCh: make(chan packet.MessageWithSrc, 1024),
 
-		l: logger,
-	}, nil
+		l: l,
+	}
+
+	client.scheduler = newScheduler(client)
+	client.initCC()
+
+	return client, nil
 }
 
 func (c *Client) ReceiveFiles(dir string) error {
@@ -91,251 +126,320 @@ func (c *Client) ReceiveFiles(dir string) error {
 	return nil
 }
 
-func (s *Client) sendLoop() {
+func (c *Client) sendLoop(bytesSent *uint64) {
 	// Clients are not expected to send any FEC blocks, we can ignore the construction
+
+	batchSize := 16
+	batch := make([][]byte, 0, batchSize)
+
+	sendBatch := func() {
+		if len(batch) == 0 {
+			return
+		}
+		for i := range batch {
+			*bytesSent += uint64(len(batch[i]))
+		}
+		err := c.multicastConn.SendBatch(batch)
+		if err != nil {
+			c.l["send"].Error("error sending batch", "error", err)
+		}
+		batch = batch[:0]
+	}
+
+	var packetsSent atomic.Int64
+
+	var leavesRequested atomic.Int64
+	var leafRequested atomic.Int64
+
+	// go func() {
+	// 	for {
+	// 		fmt.Println("Packets sent:", packetsSent.Load(), "leaves", leavesRequested.Load(), "leaf", leafRequested.Load())
+	// 		packetsSent.Store(0)
+	// 		leavesRequested.Store(0)
+	// 		leafRequested.Store(0)
+	// 		time.Sleep(1 * time.Second)
+	// 	}
+	// }()
+
 	for {
 		// TODO: add some sort of windowing mechanism to avoid sending too many messages at once
-		msg := <-s.sendCh
-		data, err := packet.WritePacket(msg, nil)
-		if err != nil {
-			s.l.Error("error encoding message", "error", err)
-			continue
-		}
+		select {
+		case msg := <-c.sendCh:
+			switch msg.Type() {
+			case packet.MessageTypeRequestLeaves:
+				leavesRequested.Add(1)
+			case packet.MessageTypeRequestLeaf:
+				leafRequested.Add(1)
+			}
+			data, err := c.fecEncoder.EncodeIgnore(msg)
+			if err != nil {
+				c.l["send"].Error("error encoding message", "error", err)
+				continue
+			}
+			packetsSent.Add(1)
 
-		if err := s.multicastConn.Send(data); err != nil {
-			s.l.Error("error sending message", "error", err)
-			continue
+			batch = append(batch, data)
+			if len(batch) >= batchSize {
+				sendBatch()
+			}
+		case <-time.After(20 * time.Millisecond):
+			sendBatch()
 		}
 	}
 }
 
-func (s *Client) receiveLoop() {
-	type ReceivedMessageWithSrc struct {
-		MSG packet.MessageWithFEC
-		Src net.IP
-	}
-
-	// Because Receive is a blocking call, we need to run it in a separate
-	// goroutine and send the received messages to the main loop via a channel
-	tmpPacketBuff := make(chan ReceivedMessageWithSrc)
+func (c *Client) receiveLoop(bytesReceived *uint64) {
+	tmpPacketBuff := make(chan internal.PacketWithSrc)
 	go func() {
-		buff := make([]byte, 65536)
-		for {
-			n, src, err := s.multicastConn.Receive(buff)
-			if err != nil {
-				s.l.Error("error receiving message", "error", err)
-				continue
-			}
-
-			msg, err := packet.ReadPacket(buff[:n])
-			if err != nil {
-				s.l.Error("error decoding message", "error", err)
-				continue
-			}
-
-			tmpPacketBuff <- ReceivedMessageWithSrc{
-				MSG: msg,
-				Src: src,
-			}
-		}
+		panic(c.fecDecoder.Run(tmpPacketBuff, c.receiveCh))
 	}()
 
-	type block struct {
-		buff   []ReceivedMessageWithSrc
-		index  map[uint64]struct{}
-		ctx    context.Context
-		cancel context.CancelFunc
-		timer  *time.Timer
+	batchSize := 32
+	buff := make([][]byte, batchSize)
+	for i := range buff {
+		buff[i] = make([]byte, 2048) // Just to make sure :), but should be MTU
 	}
-
-	blockMap := make(map[uint64]*block)
-	// TODO: There is a small possiblity of deadlock if the blockChan is full
-	// and the main loop does not select on it
-	blockChan := make(chan uint64, 4096)
-
-	notifyBlock := func(t <-chan time.Time, ctx context.Context, blockID uint64) {
-		select {
-		case <-t:
-			s.l.Debug("FEC block wait timer expired, notifying block for decoding", "blockID", blockID, "random", ctx.Value("random"))
-			blockChan <- blockID
-		case <-ctx.Done():
-			s.l.Debug("FEC block wait timer cancelled, not notifying block for decoding", "blockID", blockID, "random", ctx.Value("random"))
-			return
-		}
-	}
-
-	handleFECMessage := func(msg ReceivedMessageWithSrc) error {
-		blockID, err := s.fec.BlockID(msg.MSG)
-		if err != nil {
-			return fmt.Errorf("error getting block ID from FEC header: %w", err)
-		}
-
-		indexID, err := s.fec.IndexID(msg.MSG)
-		if err != nil {
-			return fmt.Errorf("error getting index ID from FEC header: %w", err)
-		}
-		s.l.Debug("received FEC message", "blockID", blockID, "indexID", indexID, "src", msg.Src.String())
-
-		b, ok := blockMap[blockID]
-		if !ok {
-			s.l.Debug("received first packet for FEC block, creating new block", "blockID", blockID)
-			cancelCtx, cancel := context.WithCancel(context.Background())
-			cancelCtx = context.WithValue(cancelCtx, "random", rand.Uint64())
-			b = &block{
-				buff:   make([]ReceivedMessageWithSrc, 0, s.fec.BlockSize()+s.fec.RepairCount()),
-				index:  make(map[uint64]struct{}),
-				timer:  time.NewTimer(fecWaitTimeout),
-				ctx:    cancelCtx,
-				cancel: cancel,
-			}
-			blockMap[blockID] = b
-			go notifyBlock(b.timer.C, b.ctx, blockID)
-		}
-
-		if _, ok := b.index[indexID]; ok {
-			s.l.Debug("duplicate packet received, ignoring", "blockID", blockID, "indexID", indexID)
-			return nil
-		}
-
-		if len(b.buff) > 0 {
-			// Check if src IP matches every other packet
-			src := b.buff[0].Src
-			for _, msg := range b.buff {
-				if !msg.Src.Equal(src) {
-					// TODO: This is highly likely to happen with multiple senders,
-					// even one sender that changes its IP address during the transmission.
-					// We should handle this differently
-					panic(fmt.Sprintf("blockID %d has messages from different sources: %s and %s", blockID, src.String(), msg.Src.String()))
-				}
-			}
-		}
-
-		if !b.timer.Reset(fecWaitTimeout) {
-			s.l.Debug("FEC block wait timer expired, discarding packet", "blockID", blockID)
-			return nil
-		} else {
-			// // Need to extend the timer
-			// b.cancel()
-			// select {
-			// case <-b.timer.C:
-			// default:
-			// }
-			// cancelCtx, cancel := context.WithCancel(context.Background())
-			// cancelCtx = context.WithValue(cancelCtx, "random", rand.Uint64())
-			// b.ctx = cancelCtx
-			// b.cancel = cancel
-			// go notifyBlock(b.timer.C, b.ctx, blockID)
-			// s.l.Debug("FEC block wait timer extended", "blockID", blockID)
-		}
-
-		// We received a new packet for this block
-		b.buff = append(b.buff, msg)
-		b.index[indexID] = struct{}{}
-
-		if len(b.buff) >= s.fec.BlockSize() {
-			s.l.Debug("received enough packets to decode FEC block", "blockID", blockID)
-			// We have received enough packets to decode the block, we can stop the timer
-			if !b.timer.Stop() {
-				// If the timer already expired, we need to drain the channel to prevent a leak
-				select {
-				case <-b.timer.C:
-				default:
-				}
-				// We also need to cancel the context to prevent goroutines waiting on the timer from leaking
-				b.cancel()
-			}
-			blockChan <- blockID
-		}
-		return nil
-	}
-
 	for {
-		select {
-		case msg := <-tmpPacketBuff:
-			// If no FEC just send the message on the main channel
-			if msg.MSG.FEC == nil {
-				s.receiveCh <- MessageWithSrc{
-					MSG: msg.MSG.MSG,
-					Src: msg.Src,
-				}
-
-				continue
-			}
-			err := handleFECMessage(msg)
-			if err != nil {
-				s.l.Error("error handling FEC message", "error", err)
-				continue
-			}
-		case blockID := <-blockChan:
-			s.l.Debug("notified to decode FEC block", "blockID", blockID)
-			b, ok := blockMap[blockID]
-			if !ok {
-				panic(fmt.Sprintf("blockID %d not found in blockMap", blockID))
-			}
-			if len(b.buff) == 0 {
-				panic(fmt.Sprintf("blockID %d has empty buffer", blockID))
-			}
-
-			msgs := make([]packet.MessageWithFEC, len(b.buff))
-			for i, msg := range b.buff {
-				s.l.Debug("preparing message for FEC decoding", "blockID", blockID, "indexID", i)
-				msgs[i] = msg.MSG
-			}
-
-			recovered, err := s.fec.Decode(msgs)
-			if err != nil {
-				s.l.Error("error decoding FEC block", "error", err, "blockID", blockID)
-				delete(blockMap, blockID)
-				continue
-			}
-
-			// Previous code ensures that all messages in the block have the same
-			// source IP, so we can just take the source IP from the first message
-			src := b.buff[0].Src
-
-			for _, msg := range recovered {
-				s.receiveCh <- MessageWithSrc{
-					MSG: msg,
-					Src: src,
-				}
-			}
-			s.l.Debug("FEC block decoded successfully", "blockID", blockID)
-			delete(blockMap, blockID)
+		n, srcs, err := c.multicastConn.ReceiveBatch(buff)
+		if err != nil {
+			c.l["receive"].Error("error receiving message", "error", err)
+			continue
 		}
+		for i := range n {
+			copyBuff := make([]byte, len(buff[i]))
+			*bytesReceived += uint64(len(buff[i]))
+			copy(copyBuff, buff[i])
+			c.addPacketReceivedByServerIP([16]byte(srcs[i].To16()))
+			tmpPacketBuff <- internal.PacketWithSrc{
+				Packet: copyBuff,
+				Src:    srcs[i],
+			}
+			buff[i] = buff[i][:cap(buff[i])] // Reset the buffer slice to the original size
+		}
+		buff = buff[:batchSize] // Reset the buffer slice to the original size
 	}
 }
 
 func (c *Client) run() error {
-	go c.sendLoop()
-	go c.receiveLoop()
+	finish := make(chan struct{})
+
+	bytesSent := uint64(0)
+	bytesReceived := uint64(0)
+
+	go c.sendLoop(&bytesSent)
+	go c.receiveLoop(&bytesReceived)
+	go c.scheduler.run(finish)
 
 	for {
 		select {
 		case msg := <-c.receiveCh:
 			err := c.handleMessage(msg)
 			if err != nil {
-				c.l.Error("error handling message", "error", err)
+				c.l["global"].Error("error handling message", "error", err)
 			}
+
+		case <-finish:
+			// Check that files are received correctly
+			wg := sync.WaitGroup{}
+			for h := range c.filesMap {
+				wg.Go(func() {
+					mt, err := c.merkleTreeForFileFromFile(h)
+					if err != nil {
+						c.l["global"].Error("error getting merkle tree for file", "hash", htos(h), "error", err)
+						return
+					}
+					if !bytes.Equal(mt.Root(), h[:]) {
+						c.l["global"].Error("file hash does not match merkle tree root", "hash", htos(h), "merkle_root", htos([32]byte(mt.Root())))
+					}
+				})
+			}
+			wg.Wait()
+
+			c.l["global"].Info("All files received, exiting")
+
+			// totalBytesForFiles := uint64(0)
+			// c.filesMapMutex.Lock()
+			// for _, f := range c.filesMap {
+			// 	fData := fileDataFromMetadata(f.metadata)
+			// 	totalBytesForFiles += binary.NativeEndian.Uint64(fData.Size)
+			// 	totalBytesForFiles += uint64(len(fData.Name))
+			// }
+			//
+			// c.filesMapMutex.Unlock()
+			// ov := struct {
+			// 	BytesReceived      uint64  `json:"bytes_received"`
+			// 	BytesSent          uint64  `json:"bytes_sent"`
+			// 	TotalBytesForFiles uint64  `json:"total_bytes_for_files"`
+			// 	Overhead           float64 `json:"overhead"`
+			// }{
+			// 	BytesReceived:      bytesReceived,
+			// 	BytesSent:          bytesSent,
+			// 	TotalBytesForFiles: totalBytesForFiles,
+			// 	Overhead:           float64(bytesReceived+bytesSent-totalBytesForFiles) / float64(totalBytesForFiles) * 100,
+			// }
+			//
+			// m, err := json.MarshalIndent(ov, "", "\t")
+			// if err != nil {
+			// 	panic("could not marshal struct")
+			// }
+			// fmt.Println("------------ OVERHEAD START ------------")
+			// fmt.Println(string(m))
+			// fmt.Println("------------ OVERHEAD END ------------")
+
+			return nil
 		}
 	}
 }
 
-func (s *Client) handleMessage(msg MessageWithSrc) error {
+func (c *Client) handleMessage(msg packet.MessageWithSrc) error {
 	switch msg.MSG.Type() {
 	case packet.MessageTypeAdvertisement:
 		adv := msg.MSG.(*packet.Advertisement)
-		h := hex.EncodeToString(adv.Hash[:])
-		s.l.Debug("Received advertisement packet", "hash", h)
+		h := htos(adv.Hash)
+		c.l["mhandler"].Info("Received advertisement packet", "hash", h)
 
-		s.sendCh <- s.RequestPacket(adv.Hash)
+		err := c.handleAdvertisement(adv)
+		if err != nil {
+			return fmt.Errorf("error handling advertisement: %w", err)
+		}
 
 	case packet.MessageTypeMetadata:
 		mtd := msg.MSG.(*packet.Metadata)
-		h := hex.EncodeToString(mtd.Hash[:])
-		s.l.Debug("Received metadata packet", "hash", h, "size", mtd.Size)
+		h := htos(mtd.DataHash)
+		c.l["mhandler"].Info("Received metadata packet", "hash", h)
+
+		// Do not block
+		go func() {
+			c.scheduler.rec <- schedulerMessage{
+				t: schedulerMessageTypeMetadata,
+				m: schedulerMetadataMessage{
+					h: mtd.DataHash,
+				},
+			}
+		}()
+
+		err := c.handleMetadata(mtd)
+		if err != nil {
+			return fmt.Errorf("error handling metadata: %w", err)
+		}
+
+	case packet.MessageTypeData:
+		data := msg.MSG.(*packet.Data)
+		fh := htos(data.RootHash)
+		bh := htos(data.LeafHash)
+		c.l["mhandler"].Info("Received data packet", "file_hash", fh, "blob_hash", bh, "blob_id", data.LeafIndex, "packet_id", data.PacketIndex)
+
+		go func() {
+			c.scheduler.rec <- schedulerMessage{
+				t: schedulerMessageTypeData,
+				m: schedulerDataMessage{
+					rootHash: data.RootHash,
+					leafHash: data.LeafHash,
+				},
+			}
+		}()
+
+		c.filesMapMutex.Lock()
+		f, ok := c.filesMap[data.RootHash]
+		if !ok {
+			// TODO: Remove
+			panic(fmt.Sprintf("received data packet for unknown file: %s", fh))
+		}
+		c.filesMapMutex.Unlock()
+
+		if f.isFinished {
+			return nil
+		}
+
+		f.dataChan <- &dataInChunk{
+			chunkHash:   data.LeafHash,
+			chunkID:     data.LeafIndex,
+			packetIndex: data.PacketIndex,
+			data:        data.Data,
+		}
+
+	case packet.MessageTypeMerkleTree:
+		pkt := msg.MSG.(*packet.MerkleTree)
+		c.l["mhandler"].Info("Received merkle tree packet", "root_hash", htos(pkt.RootHash), "depth", pkt.Depth, "node_count", len(pkt.Nodes))
+
+		go func() {
+			c.scheduler.rec <- schedulerMessage{
+				t: schedulerMessageTypeMerkleTree,
+				m: schedulerMerkleTreeMessage{
+					rootHash: pkt.RootHash,
+					depth:    pkt.Depth,
+					leaves:   pkt.Nodes,
+				},
+			}
+		}()
+
+	case packet.MessageTypeFeedbackRequest:
+		pkt := msg.MSG.(*packet.FeedbackRequest)
+		c.l["mhandler"].Info("Received feedback request packet", "id", pkt.RequestID, "timespan", pkt.Timespan, "number", pkt.NumberOfFeedbacks, "src", msg.Src.String())
+
+		c.handleFeedbackRequest(pkt, msg.Src)
+
+	case packet.MessageTypeRequestLeaves, packet.MessageTypeRequestLeaf, packet.MessageTypeFeedback:
+	// Do nothing
+
 	default:
 		return fmt.Errorf("unknown message type: %d", msg.MSG.Type())
 	}
 
 	return nil
+}
+
+func makeLoggers() map[string]*slog.Logger {
+	makeLogger := func(component string, level *slog.LevelVar) *slog.Logger {
+		h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+				if a.Key == slog.TimeKey {
+					return slog.Attr{}
+				}
+				return a
+			},
+			Level: level,
+		})
+		return slog.New(h).With("component", component)
+	}
+
+	levels := map[string]*slog.LevelVar{
+		"global":    {},
+		"fec":       {},
+		"send":      {},
+		"receive":   {},
+		"mhandler":  {},
+		"metadata":  {},
+		"file":      {},
+		"request":   {},
+		"scheduler": {},
+		"cc":        {},
+	}
+
+	loggers := map[string]*slog.Logger{
+		"global":    makeLogger("global", levels["global"]),
+		"fec":       makeLogger("fec", levels["fec"]),
+		"send":      makeLogger("send", levels["send"]),
+		"receive":   makeLogger("receive", levels["receive"]),
+		"mhandler":  makeLogger("mhandler", levels["mhandler"]),
+		"metadata":  makeLogger("metadata", levels["metadata"]),
+		"file":      makeLogger("file", levels["file"]),
+		"request":   makeLogger("request", levels["request"]),
+		"scheduler": makeLogger("scheduler", levels["scheduler"]),
+		"cc":        makeLogger("cc", levels["cc"]),
+	}
+
+	// Change level at any time, takes effect immediately:
+	levels["global"].Set(slog.LevelDebug)
+	levels["fec"].Set(slog.LevelInfo)
+	levels["send"].Set(slog.LevelDebug)
+	levels["receive"].Set(slog.LevelInfo)
+	levels["mhandler"].Set(slog.LevelWarn)
+	levels["metadata"].Set(slog.LevelWarn)
+	levels["file"].Set(slog.LevelInfo)
+	levels["request"].Set(slog.LevelInfo)
+	levels["scheduler"].Set(slog.LevelWarn)
+	levels["cc"].Set(slog.LevelDebug)
+
+	return loggers
 }

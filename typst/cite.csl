@@ -1,0 +1,49 @@
+
+<?xml version="1.0" encoding="utf-8"?>
+<style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0" default-locale="en-UK">
+  <info>
+    <title>RFC + Author-Year</title>
+    <id>rfc-author-year</id>
+  </info>
+
+  <macro name="cite-label">
+    <choose>
+      <if type="report">
+        <text variable="number"/>
+      </if>
+      <else>
+        <group delimiter=" - ">
+          <names variable="author">
+            <name form="short" and="text" et-al-min="3" et-al-use-first="1"/>
+          </names>
+          <date variable="issued">
+            <date-part name="year"/>
+          </date>
+        </group>
+      </else>
+    </choose>
+  </macro>
+
+  <citation>
+    <layout prefix="[" suffix="]" delimiter="; ">
+      <text macro="cite-label"/>
+    </layout>
+  </citation>
+
+  <bibliography>
+    <layout suffix=".">
+      <group prefix="[" suffix="] " delimiter=" ">
+        <text macro="cite-label"/>
+      </group>
+      <text variable="title" suffix=". "/>
+      <names variable="author" suffix=". ">
+        <name delimiter=", " and="text"/>
+      </names>
+      <text variable="publisher" suffix=", "/>
+      <date variable="issued">
+        <date-part name="year"/>
+      </date>
+      <text variable="URL" prefix=". "/>
+    </layout>
+  </bibliography>
+</style>

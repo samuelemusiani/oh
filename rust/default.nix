@@ -1,11 +1,7 @@
-{ craneLib }:
-let commonArgs = {
+{ craneLib }: craneLib.buildPackage {
+  name = "The rust implementation of OH";
   src = craneLib.cleanCargoSource ./.;
   strictDeps = true;
   cargoLock = ./Cargo.lock;
-}; in craneLib.buildPackage (
-  commonArgs // {
-    cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-  }
-)
-
+  cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+}

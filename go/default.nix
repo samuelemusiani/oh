@@ -1,8 +1,11 @@
-{ pkgs }: pkgs.buildGoModule {
+{ pkgs, lib }: pkgs.buildGoModule {
   name = "The go implementation of OH";
-  src = ../.;
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../go;
+  };
   modRoot = "./go";
   goSum = ./go.sum;
   subPackages = [ "cmd" ];
-  vendorHash = "sha256-uORF2w10osTjCXrJ4WCVM3Tfof3Q1VWV5RPVR/ODO8c=";
+  vendorHash = "sha256-QCQiqddt/2bQ8Hgmm68udXfnnFMek36a0CMhwxw03eU=";
 }

@@ -16,16 +16,18 @@ const (
 )
 
 type Metadata struct {
-	// Root hash of the Merkle tree of the blob
-	Hash [32]byte
+	// Hash of the manifest that contains this metadata
+	ManifestHash [32]byte
+
+	// Root hash of the Merkle tree of the data
+	DataHash [32]byte
 
 	// Root hash of the Merkle tree of extra metadata
-	HashExtra [32]byte
-
-	// Size of the blob in bytes
-	Size uint64
+	ExtraMetadataHash [32]byte
 
 	// SHADOW: BlobType blobType
+
+	// SHADOW: Reserved uint8
 
 	// Type dependent metadata (file name, stream ID, ...)
 	Data BlobData
@@ -38,6 +40,16 @@ type BlobData interface {
 }
 
 type FileMetadata struct {
+	// Depth of the Merkle tree for the file data
+	MerkleTreeDepth uint8
+
+	// SHADOW: Reserved uint6
+	// SHADOW: Size bits
+
+	// Size of the file. This can be 64, 128, 256 and 320 bits.
+	// Len is encoded in Size bits
+	Size []uint8
+
 	// SHADOW: Length of the name in bytes
 
 	// Name of the file
@@ -52,10 +64,8 @@ type DirectoryMetadata struct {
 }
 
 type StreamMetadata struct {
-	// SHADOW: Length of the ID in bytes
-
 	// ID of the stream
-	ID []byte
+	ID [256]byte
 }
 
 func (m *Metadata) Type() messageType {
@@ -76,17 +86,21 @@ func (s *StreamMetadata) Type() blobType {
 
 func (m *Metadata) Encode() ([]byte, error) {
 	buff := bytes.NewBuffer(nil)
-	if err := binary.Write(buff, binary.BigEndian, m.Hash); err != nil {
-		return nil, fmt.Errorf("error encoding hash: %w", err)
+	if err := binary.Write(buff, binary.BigEndian, m.ManifestHash); err != nil {
+		return nil, fmt.Errorf("error encoding manifest hash: %w", err)
 	}
-	if err := binary.Write(buff, binary.BigEndian, m.HashExtra); err != nil {
-		return nil, fmt.Errorf("error encoding hash extra: %w", err)
+	if err := binary.Write(buff, binary.BigEndian, m.DataHash); err != nil {
+		return nil, fmt.Errorf("error encoding data hash: %w", err)
 	}
-	if err := binary.Write(buff, binary.BigEndian, m.Size); err != nil {
-		return nil, fmt.Errorf("error encoding size: %w", err)
+	if err := binary.Write(buff, binary.BigEndian, m.ExtraMetadataHash); err != nil {
+		return nil, fmt.Errorf("error encoding extra metadata hash: %w", err)
 	}
 	if err := binary.Write(buff, binary.BigEndian, m.Data.Type()); err != nil {
 		return nil, fmt.Errorf("error encoding blob type: %w", err)
+	}
+	// Reserved byte is always 0
+	if err := binary.Write(buff, binary.BigEndian, uint8(0)); err != nil {
+		return nil, fmt.Errorf("error encoding reserved byte: %w", err)
 	}
 
 	blobData, err := m.Data.EncodeBlobData()
@@ -102,18 +116,22 @@ func (m *Metadata) Encode() ([]byte, error) {
 
 func (m *Metadata) Decode(buff []byte) error {
 	r := bytes.NewReader(buff)
-	if err := binary.Read(r, binary.BigEndian, &m.Hash); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &m.ManifestHash); err != nil {
+		return fmt.Errorf("error decoding manifest hash: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &m.DataHash); err != nil {
 		return fmt.Errorf("error decoding hash: %w", err)
 	}
-	if err := binary.Read(r, binary.BigEndian, &m.HashExtra); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &m.ExtraMetadataHash); err != nil {
 		return fmt.Errorf("error decoding hash extra: %w", err)
-	}
-	if err := binary.Read(r, binary.BigEndian, &m.Size); err != nil {
-		return fmt.Errorf("error decoding size: %w", err)
 	}
 	var blobType blobType
 	if err := binary.Read(r, binary.BigEndian, &blobType); err != nil {
 		return fmt.Errorf("error decoding blob type: %w", err)
+	}
+	var reserved uint8
+	if err := binary.Read(r, binary.BigEndian, &reserved); err != nil {
+		return fmt.Errorf("error decoding reserved byte: %w", err)
 	}
 
 	switch blobType {
@@ -141,7 +159,31 @@ func (m *Metadata) Decode(buff []byte) error {
 
 func (f *FileMetadata) EncodeBlobData() ([]byte, error) {
 	buff := bytes.NewBuffer(nil)
-	if err := binary.Write(buff, binary.BigEndian, uint16(len(f.Name))); err != nil {
+	if err := binary.Write(buff, binary.BigEndian, f.MerkleTreeDepth); err != nil {
+		return nil, fmt.Errorf("error encoding Merkle tree depth: %w", err)
+	}
+
+	var reservedAndSize uint8
+	switch len(f.Size) {
+	case 64 / 8:
+		reservedAndSize = 0
+	case 128 / 8:
+		reservedAndSize = 1
+	case 256 / 8:
+		reservedAndSize = 2
+	case 320 / 8:
+		reservedAndSize = 3
+	default:
+		return nil, fmt.Errorf("invalid size length: %d bytes", len(f.Size))
+	}
+
+	if err := binary.Write(buff, binary.BigEndian, reservedAndSize); err != nil {
+		return nil, fmt.Errorf("error encoding reserved and size: %w", err)
+	}
+	if err := binary.Write(buff, binary.BigEndian, f.Size); err != nil {
+		return nil, fmt.Errorf("error encoding size: %w", err)
+	}
+	if err := binary.Write(buff, binary.BigEndian, uint8(len(f.Name))); err != nil {
 		return nil, fmt.Errorf("error encoding file name length: %w", err)
 	}
 	if _, err := buff.Write([]byte(f.Name)); err != nil {
@@ -152,7 +194,32 @@ func (f *FileMetadata) EncodeBlobData() ([]byte, error) {
 
 func (f *FileMetadata) DecodeBlobData(buff []byte) error {
 	r := bytes.NewReader(buff)
-	var nameLen uint16
+	if err := binary.Read(r, binary.BigEndian, &f.MerkleTreeDepth); err != nil {
+		return fmt.Errorf("error decoding Merkle tree depth: %w", err)
+	}
+	var reservedAndSize uint8
+	if err := binary.Read(r, binary.BigEndian, &reservedAndSize); err != nil {
+		return fmt.Errorf("error decoding reserved and size: %w", err)
+	}
+
+	switch reservedAndSize & 0x03 {
+	case 0:
+		f.Size = make([]uint8, 64/8)
+	case 1:
+		f.Size = make([]uint8, 128/8)
+	case 2:
+		f.Size = make([]uint8, 256/8)
+	case 3:
+		f.Size = make([]uint8, 320/8)
+	default:
+		return fmt.Errorf("invalid size length: %d bytes", reservedAndSize&0x03)
+	}
+
+	if err := binary.Read(r, binary.BigEndian, &f.Size); err != nil {
+		return fmt.Errorf("error decoding size: %w", err)
+	}
+
+	var nameLen uint8
 	if err := binary.Read(r, binary.BigEndian, &nameLen); err != nil {
 		return fmt.Errorf("error decoding file name length: %w", err)
 	}
@@ -171,7 +238,7 @@ func (f *FileMetadata) DecodeBlobData(buff []byte) error {
 
 func (d *DirectoryMetadata) EncodeBlobData() ([]byte, error) {
 	buff := bytes.NewBuffer(nil)
-	if err := binary.Write(buff, binary.BigEndian, uint16(len(d.Name))); err != nil {
+	if err := binary.Write(buff, binary.BigEndian, uint8(len(d.Name))); err != nil {
 		return nil, fmt.Errorf("error encoding directory name length: %w", err)
 	}
 	if _, err := buff.Write([]byte(d.Name)); err != nil {
@@ -182,7 +249,7 @@ func (d *DirectoryMetadata) EncodeBlobData() ([]byte, error) {
 
 func (d *DirectoryMetadata) DecodeBlobData(buff []byte) error {
 	r := bytes.NewReader(buff)
-	var nameLen uint16
+	var nameLen uint8
 	if err := binary.Read(r, binary.BigEndian, &nameLen); err != nil {
 		return fmt.Errorf("error decoding directory name length: %w", err)
 	}
@@ -200,31 +267,21 @@ func (d *DirectoryMetadata) DecodeBlobData(buff []byte) error {
 }
 
 func (s *StreamMetadata) EncodeBlobData() ([]byte, error) {
-	buff := bytes.NewBuffer(nil)
-	if err := binary.Write(buff, binary.BigEndian, uint16(len(s.ID))); err != nil {
-		return nil, fmt.Errorf("error encoding stream ID length: %w", err)
-	}
-	if _, err := buff.Write(s.ID); err != nil {
+	b := bytes.NewBuffer(nil)
+	if _, err := b.Write(s.ID[:]); err != nil {
 		return nil, fmt.Errorf("error encoding stream ID: %w", err)
 	}
-	return buff.Bytes(), nil
+	return b.Bytes(), nil
 }
 
 func (s *StreamMetadata) DecodeBlobData(buff []byte) error {
-	r := bytes.NewReader(buff)
-	var idLen uint16
-	if err := binary.Read(r, binary.BigEndian, &idLen); err != nil {
-		return fmt.Errorf("error decoding stream ID length: %w", err)
+	if len(buff) != 256 {
+		return fmt.Errorf("invalid stream ID length: %d", len(buff))
 	}
-	s.ID = make([]byte, idLen)
-	if _, err := r.Read(s.ID); err != nil {
+	r := bytes.NewReader(buff)
+	if _, err := r.Read(s.ID[:]); err != nil {
 		return fmt.Errorf("error decoding stream ID: %w", err)
 	}
-
-	if _, err := r.Read(make([]byte, 1)); err != io.EOF {
-		return fmt.Errorf("error decoding: %w", ErrExtraAfterReadingMessage)
-	}
-
 	return nil
 }
 

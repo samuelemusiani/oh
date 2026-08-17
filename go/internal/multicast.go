@@ -18,7 +18,8 @@ type Multicast struct {
 	conn *ipv4.PacketConn
 	addr net.UDPAddr
 
-	myAddrs map[string]struct{}
+	msgs []ipv4.Message
+	srcs []net.IP
 }
 
 func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast, error) {
@@ -93,10 +94,16 @@ func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast
 
 	// TODO: Set TTL to a reasonable value.
 	// 2 should be reasonable as we only have 1 router in the network
-	err = p.SetMulticastTTL(2)
+	err = p.SetMulticastTTL(64)
 	if err != nil {
 		_ = p.Close()
 		return nil, fmt.Errorf("error setting TTL: %w", err)
+	}
+
+	err = p.SetMulticastLoopback(false)
+	if err != nil {
+		_ = p.Close()
+		return nil, fmt.Errorf("error setting multicast loopback: %w", err)
 	}
 
 	err = p.SetMulticastInterface(netIface)
@@ -106,14 +113,12 @@ func OpenMulticastConnection(addr net.IP, port uint16, iface string) (*Multicast
 	}
 
 	return &Multicast{
-		conn:    p,
-		addr:    net.UDPAddr{IP: addr, Port: int(port)},
-		myAddrs: ipSet,
+		conn: p,
+		addr: net.UDPAddr{IP: addr, Port: int(port)},
 	}, nil
 }
 
 func (m *Multicast) Send(data []byte) error {
-	// fmt.Printf("Sending %d bytes\n", len(data))
 	_, err := m.conn.WriteTo(data, nil, &m.addr)
 	if err != nil {
 		return fmt.Errorf("error sending data: %w", err)
@@ -123,21 +128,64 @@ func (m *Multicast) Send(data []byte) error {
 }
 
 func (m *Multicast) Receive(buf []byte) (n int, src net.IP, err error) {
-loop:
-	for {
-		n, cm, _, err := m.conn.ReadFrom(buf)
-		if err != nil {
-			return 0, nil, fmt.Errorf("error receiving data: %w", err)
-		}
-
-		if cm == nil || cm.Dst == nil {
-			return 0, nil, fmt.Errorf("error receiving data: control message is nil or missing destination address")
-		}
-
-		if _, ok := m.myAddrs[cm.Src.String()]; ok {
-			continue loop
-		}
-
-		return n, cm.Src, nil
+	n, cm, _, err := m.conn.ReadFrom(buf)
+	if err != nil {
+		return 0, nil, fmt.Errorf("error receiving data: %w", err)
 	}
+
+	if cm == nil || cm.Dst == nil {
+		return 0, nil, fmt.Errorf("error receiving data: control message is nil or missing destination address")
+	}
+
+	return n, cm.Src, nil
+}
+
+func (m *Multicast) SendBatch(data [][]byte) error {
+	msgs := make([]ipv4.Message, len(data))
+	for i := range data {
+		msgs[i] = ipv4.Message{
+			Buffers: [][]byte{data[i]},
+			Addr:    &m.addr,
+			N:       len(data[i]),
+		}
+	}
+	_, err := m.conn.WriteBatch(msgs, 0) // TODO: Check flags
+	if err != nil {
+		return fmt.Errorf("error sending batch: %w", err)
+	}
+
+	return nil
+}
+
+func (m *Multicast) ReceiveBatch(buff [][]byte) (n int, srcs []net.IP, err error) {
+	if m.msgs == nil || len(m.msgs) != len(buff) {
+		m.msgs = make([]ipv4.Message, len(buff))
+		for i := range buff {
+			m.msgs[i] = ipv4.Message{
+				Buffers: make([][]byte, 1),
+			}
+		}
+	}
+
+	for i := range buff {
+		m.msgs[i].Buffers[0] = buff[i]
+	}
+
+	n, err = m.conn.ReadBatch(m.msgs, 0) // TODO: Check flags
+	if err != nil {
+		return 0, nil, fmt.Errorf("error receiving batch: %w", err)
+	}
+
+	for i := 0; i < n; i++ {
+		buff[i] = buff[i][:m.msgs[i].N]
+	}
+
+	srcs = make([]net.IP, n)
+	for i := 0; i < n; i++ {
+		if m.msgs[i].Addr == nil {
+			return 0, nil, fmt.Errorf("error receiving batch: control message is nil or missing destination address")
+		}
+		srcs[i] = m.msgs[i].Addr.(*net.UDPAddr).IP
+	}
+	return n, srcs, nil
 }
