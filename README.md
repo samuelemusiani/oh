@@ -80,8 +80,8 @@ Implementations in Go and Rust for the Optimistic HIPPO (OH) protocol, the spec 
 │           ├── packet.rs           	#
 │           └── zc.rs               	#
 └── typst                           	#
-    ├── omftp.pdf                  	# spec as submitted in assignment 2
-    └── omftp.typ                  	# source for the spec - build with `typst compile omftp.typ`
+    ├── omftp.pdf                   	# spec as submitted in assignment 2
+    └── omftp.typ                   	# source for the spec - build with `typst compile omftp.typ`
 ```
 
 ## Running
