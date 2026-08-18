@@ -97,7 +97,7 @@ To see the full list of options run `nix flake show`, not all have been tested.
 
 ## Feature support
 
-Overall, server-go/NullFEC can successfully serve files to client-go/NullFEC and client-rs, server-go/XorFEC can successfully serve files to client-go/XorFEC<!--;  and TODO server-rs can serve to client-rs and client-go/NullFEC -->.
+Overall, server-go/NullFEC can successfully serve files to client-go/NullFEC and client-rs, server-go/XorFEC can successfully serve files to client-go/XorFEC; and server-rs can serve to client-rs and client-go/NullFEC.
 
 Below is a more detailed breakdown of the implementation's supported features.
 We prefered implementing different subsets / levels of inteligence to see how they interoperate.
