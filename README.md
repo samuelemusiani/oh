@@ -22,7 +22,7 @@ The compability between different implementations is shown below.
 |     | sgo | sgoN | srs |
 | --- | --- | --- | ---  |
 | rgo | ✅  |  ➖  |  ➖   |
-| rgoN |   |  ✅  |  ❌^[1]   |
+| rgoN | ➖  |  ✅  |  ❌^[1]   |
 | rrs|  ➖  |  ✅  |  ✅   |
 
 - [1]: We believe this is due to missing endianness conversion of the size metadata field in the go implementation. (rrs is not affected, because it doesn't use the size.)
