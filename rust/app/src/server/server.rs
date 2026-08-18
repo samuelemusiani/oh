@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 
 use log::{debug, error, info, trace};

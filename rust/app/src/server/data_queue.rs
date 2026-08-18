@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use log::{debug, error, info, trace};
+use log::{error, info, trace};
 use protocol::{Hash, data::MerkleHash, packet_owned::PacketOwned};
 use tokio::sync::{Mutex, Notify, mpsc::Sender};
 
