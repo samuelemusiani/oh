@@ -91,7 +91,20 @@ async fn main() -> anyhow::Result<()> {
         None => Ipv4Addr::UNSPECIFIED,
     };
 
-    if let Some(files) = args.server_files {
+    if let Some(mut files) = args.server_files {
+        if let [only] = files.as_slice() {
+            if only.is_dir() {
+                let mut entries = Vec::new();
+                let mut read_dir = tokio::fs::read_dir(only).await?;
+                while let Some(entry) = read_dir.next_entry().await? {
+                    if entry.file_type().await?.is_file() {
+                        entries.push(entry.path());
+                    }
+                }
+                entries.sort();
+                files = entries;
+            }
+        }
         info!("Sending files: {files:?}");
         debug!("Generating data structures for files...");
         let manifest = protocol::build_manifest_from_files(&files).await?;
