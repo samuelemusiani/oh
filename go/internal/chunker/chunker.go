@@ -7,6 +7,7 @@ import (
 
 const (
 	MaxChunkSize = 1024 * 640
+	ChunkSize = 1024
 )
 
 // A Chunk represents a chunk of data that has an hash associated with it
@@ -38,7 +39,7 @@ func (c *Chunker) ChunkFile(r io.ReaderAt) ([]*Chunk, error) {
 
 	h := c.hashFunc()
 
-	size := MaxChunkSize
+	size := ChunkSize
 	chunks := make([]*Chunk, 0)
 
 	for {
