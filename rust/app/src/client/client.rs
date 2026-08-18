@@ -3,6 +3,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     path::PathBuf,
     sync::Arc,
+    io::Write,
 };
 
 use log::{debug, error, trace, warn, info};
@@ -478,6 +479,9 @@ impl Client {
                 if file_state.leaf_hashes_correct {
                     let leaf_states = self.leaf_states.lock().await;
                     file_state.update_leaves_complete(&leaf_states);
+                    if file_state.leaves_complete {
+                        self.handle_completed_file(file_state, &leaf_states).await;
+                    }
                 }
             }
 
@@ -605,6 +609,9 @@ impl Client {
                 // when leaf hashes become correct, init leaves_complete
                 if file_state.leaf_hashes_correct {
                     file_state.update_leaves_complete(&leaf_states);
+                    if file_state.leaves_complete {
+                        self.handle_completed_file(file_state, &leaf_states).await;
+                    }
                 }
             }
         }
@@ -644,6 +651,9 @@ impl Client {
                 for st_root_hidx in leaf_state.subtrees_to_notify.clone() {
                     if let Some(file_state) = file_states.get_mut(&st_root_hidx) {
                         file_state.update_leaves_complete(&leaf_states);
+                        if file_state.leaves_complete {
+                            self.handle_completed_file(file_state, &leaf_states).await;
+                        }
                     }
                 }
             }
@@ -1084,5 +1094,43 @@ impl Client {
             // TODO: awake me on feedback request, and sleep less long
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+    }
+
+    async fn write_file(&self, file_state: &FileState, leaf_states: &HashMap<MerklePoolIdx, LeafState>) -> Result<(), AppError>
+    {
+        let file_name = if let Ok(file_name) = str::from_utf8(&file_state.name) {
+            file_name
+        } else {
+            warn!("Got completed file, but can't save, because name is not utf-8.");
+            return Ok(());
+        };
+
+        // TODO: make sure file_name has no dir-delims
+        let path = self.output_directory.join(file_name);
+        info!("Writing completed file to {}", path.display());
+
+        let mut file = std::fs::File::create(&path)?;
+
+        for leaf_hidx in &file_state.leaf_hashes {
+            let leaf_state = leaf_states.get(&leaf_hidx).unwrap();
+            for p in &leaf_state.packets {
+                if let Some(p) = p {
+                    file.write_all(&p)?;
+                }
+            }
+        }
+
+        return Ok(());
+    }
+
+    async fn handle_completed_file(&self, file_state: &FileState, leaf_states: &HashMap<MerklePoolIdx, LeafState>)
+    {
+        if let Err(err) = self.write_file(file_state, leaf_states).await {
+            warn!("Writing to file failed: {}", err);
+        } else {
+            info!("File successfully written.");
+        }
+
+        //TODO: kill client if done
     }
 }
