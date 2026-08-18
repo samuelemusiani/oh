@@ -12,6 +12,7 @@
       devShells.default = pkgs.mkShell {
         strictDeps = true;
         nativeBuildInputs = [ pkgs.typst ];
+        inputsFrom = [ oh-go oh-rs ];
         TYPST_FONT_PATHS = lib.concatStringsSep ":" [ pkgs.newcomputermodern ];
       };
     };
