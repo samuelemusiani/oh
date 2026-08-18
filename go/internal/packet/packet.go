@@ -23,7 +23,9 @@ const (
 
 	// TODO: Calculate this based on MTU
 	// 1200 (MTU) - 20 (ipv4) - 8 (UDP) - 2 (header) = 1170
-	MaxPayloadSize = 1170
+	//MaxPayloadSize = 1170
+	// => for now just take a realistic upper bound for the MTU
+	MaxPayloadSize = 4096
 
 	// MaxPayloadSize - 76 (data header)
 	MaxDataPacketPayload = MaxPayloadSize - 76
