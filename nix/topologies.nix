@@ -10,13 +10,14 @@ let
 
   goCmd = "${oh-go}/bin/cmd";
   rsCmd = "${oh-rs}/bin/oh-rs";
+  logSuff = ""; #"1> out.log 2> err.log";
 
   senderScripts = cmd: enableTmux: lib.optionalAttrs (!enableTmux) {
-    sender.exec = "${cmd} -a ${mcastAddr} -t ${mcastPort} -i veth0 -s ${testFiles [ 1 64 ]}";
+    sender.exec = "${cmd} -a ${mcastAddr} -t ${mcastPort} -i veth0 -s ${testFiles [ 1 64 ]} ${logSuff}";
   };
   receiverScripts = cmd: {
     receiver = {
-      exec = "${cmd} -a ${mcastAddr} -t ${mcastPort} -i veth0 .";
+      exec = "${cmd} -a ${mcastAddr} -t ${mcastPort} -i veth0 . ${logSuff}";
       await = true;
     };
   };
