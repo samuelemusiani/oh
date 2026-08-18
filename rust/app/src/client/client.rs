@@ -28,6 +28,17 @@ use protocol::data::{hash_chunk_from_iter, hash_empty_chunk, build_merkle_tree, 
 
 // allow max this many feedback packets per second
 const MAX_NUM_FEEDBACK_PACKETS_PER_SEC: u32 = 2000;
+// TODO: these should take RTT into account
+// How long to wait to re-request an incomplete manifest after not receiving any
+// metadata for it anymore
+const MANIFEST_RECV_INACTIVITY_REREQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1000);
+// How long to wait with re-requesting after seeing anyone request it.
+const MANIFEST_REQ_INACTIVITY_REREQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1000);
+// How long after not having seen any advertisement we should give up requesting
+// the manifest.
+// (Note: This timeout marks the end of the time window in that we request. The
+// (max of the) ones above are mark the beginning.)
+const MANIFEST_AD_INACTIVITY_REREQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 struct FeedbackState {
     last_reqest_id: u16,
@@ -58,6 +69,10 @@ struct FileState {
     // Only used when leaf_hashes_correct is true.
     // If this and leaf_hashes_correct are both true, the file is completely recevied.
     leaves_complete: bool,
+    // same as in ManifestState
+    last_time_recved: std::time::Instant,
+    last_time_requested: std::time::Instant,
+    // TODO: for advertisement timeout, maybe store set of (non-timeouted) manifests that include this file
 }
 
 impl FileState {
@@ -136,6 +151,17 @@ struct ManifestState {
     root_hash: MerklePoolIdx,
     leaf_hashes: HashSet<MerklePoolIdx>,
     is_complete: bool,
+    // The last time we recevied a Metadata packet for this manifest.
+    // Only re-request manifest after a timeout.
+    last_time_recved: std::time::Instant,
+    // The last time we've seen anyone (this client, or anyone else) request the
+    // leaves of the manifest root hash.
+    // Used for rate-limiting and de-duplicating requests.
+    last_time_requested: std::time::Instant,
+    // The last time we've seen adverisement for the manifest.
+    // If the advertising server is gone or unreachable, or it doesn't serve the
+    // manifest any longer, it no longer makes sense to send requests.
+    last_time_advertised: std::time::Instant,
 }
 
 impl ManifestState {
@@ -153,7 +179,7 @@ impl ManifestState {
             self.leaf_hashes.iter()
             .map(|hidx| merkle_pool.node(*hidx).hash)
             .collect();
-        leaf_hashes_sorted.sort_unstable(); //TODO: sorted correctly?
+        leaf_hashes_sorted.sort_unstable_by(|a, b| a.cmp(b));
 
         let merkle_tree_height = leaf_hashes_sorted.len().next_power_of_two().ilog2() as u8;
 
@@ -187,6 +213,13 @@ pub struct Client {
     // TODO: should store manifest hashes separately, as they're higher priority (might even request when there's ongoing traffic)
     // TODO: should also give up after N times for manifest hashes (unless it's seen again)
     desired_hashes: Mutex<Vec<MerklePoolIdx>>,
+    // Root hashes of manifests that we still want to receive.
+    // Requester is controlled via this.
+    // Every manifest goes in here. Completed ones, as well as those where we
+    // give up are removed.
+    desired_manifests: Mutex<HashSet<MerklePoolIdx>>,
+    // Same as above, but for files.
+    desired_files: Mutex<HashSet<MerklePoolIdx>>,
     manifest_states: Mutex<HashMap<MerklePoolIdx, ManifestState>>,
     file_states: Mutex<HashMap<MerklePoolIdx, FileState>>,
     leaf_states: Mutex<HashMap<MerklePoolIdx, LeafState>>,
@@ -242,6 +275,8 @@ impl Client {
             empty_chunk_hidx,
             feedback_states: Default::default(),
             desired_hashes: Default::default(),
+            desired_manifests: Default::default(),
+            desired_files: Default::default(),
             manifest_states: Default::default(),
             file_states: Default::default(),
             leaf_states: leaf_states.into(),
@@ -251,8 +286,11 @@ impl Client {
     pub async fn run(self: Arc<Self>) -> Result<(), AppError> {
         let client = self.clone();
         let feedback_sender_job = tokio::task::spawn(async move { client.feedback_sender_run().await });
+        let client = self.clone();
+        let requester_job = tokio::task::spawn(async move { client.requester_run().await });
         self.receiver().await?;
-        let _ = feedback_sender_job.await.unwrap();
+        let _ = feedback_sender_job.await.unwrap(); //TODO: these never terminate
+        let _ = requester_job.await.unwrap();
         Ok(())
     }
 
@@ -292,17 +330,36 @@ impl Client {
             desired_hashes.push(root_hidx);
         }
 
-        let mut manifest_states = self.manifest_states.lock().await;
-        if manifest_states.get(&root_hidx).is_none() {
-            let manifest_state = manifest_states.entry(root_hidx)
-                .insert_entry(ManifestState {
-                    root_hash: root_hidx,
-                    leaf_hashes: Default::default(),
-                    is_complete: false,
-                })
-                .into_mut();
+        let is_manifest_complete: bool;
+        {
+            let mut manifest_states = self.manifest_states.lock().await;
 
-            manifest_state.update_is_complete(&merkle_pool); // (can be true only if manifest is empty)
+            let t_now = std::time::Instant::now();
+            let t_long_ago = t_now - std::time::Duration::from_secs(10000); // sorry, time travelers
+
+            if let Some(manifest_state) = manifest_states.get_mut(&root_hidx) {
+                manifest_state.last_time_advertised = t_now;
+                is_manifest_complete = manifest_state.is_complete;
+            } else {
+                let manifest_state = manifest_states.entry(root_hidx)
+                    .insert_entry(ManifestState {
+                        root_hash: root_hidx,
+                        leaf_hashes: Default::default(),
+                        is_complete: false,
+                        last_time_recved: t_long_ago,
+                        last_time_requested: t_long_ago,
+                        last_time_advertised: t_now,
+                    })
+                    .into_mut();
+
+                manifest_state.update_is_complete(&merkle_pool); // (can be true only if manifest is empty)
+                is_manifest_complete = manifest_state.is_complete;
+            }
+        }
+
+        if !is_manifest_complete {
+            let mut desired_manifests = self.desired_manifests.lock().await;
+            desired_manifests.insert(root_hidx);
         }
 
         return Ok(());
@@ -342,12 +399,22 @@ impl Client {
         // Update completedness of the manifest
         {
             let mut manifest_states = self.manifest_states.lock().await;
+
+            let t_now = std::time::Instant::now();
+            let t_long_ago = t_now - std::time::Duration::from_secs(10000); // sorry, time travelers
+
             let manifest_state = manifest_states.entry(manifest_hidx)
                 .or_insert(ManifestState {
                     root_hash: manifest_hidx,
                     leaf_hashes: Default::default(),
                     is_complete: false,
+                    last_time_recved: t_long_ago,
+                    last_time_requested: t_long_ago,
+                    last_time_advertised: t_long_ago,
                 });
+
+            manifest_state.last_time_recved = t_now;
+            manifest_state.last_time_advertised = t_now; // we count this as advertisement
 
             let (leaf_hidx, _) = merkle_pool.pool(&leaf_hash);
             let is_new_leaf_hash = manifest_state.leaf_hashes.insert(leaf_hidx);
@@ -356,6 +423,8 @@ impl Client {
                 manifest_state.update_is_complete(&merkle_pool);
             }
         }
+
+        let mut is_incomplete_file = false;
 
         if let protocol::packet::MetadataPacketData::FileMetadata { merkle_tree_depth, size_bits, size, name_length, name } =
             metadata_packet.data
@@ -371,9 +440,15 @@ impl Client {
                 name = &name[0..name_length];
             }
 
+            let t_now = std::time::Instant::now();
+            let t_long_ago = t_now - std::time::Duration::from_secs(10000); // sorry, time travelers
+
             // new file meta to store?
             let mut file_states = self.file_states.lock().await;
-            if file_states.get(&data_hidx).is_none() {
+            let file_state: &mut FileState;
+            if let Some(fs) = file_states.get_mut(&data_hidx) {
+                file_state = fs;
+            } else {
                 let size: Option<usize> = match size_bits {
                     0b00 => {
                         if let Ok(size) = <[u8; 8]>::try_from(size) {
@@ -391,7 +466,7 @@ impl Client {
                     _ => None, // not supported
                 };
                 let leaf_hashes = vec![self.empty_chunk_hidx; num_leaves].into_boxed_slice();
-                let file_state = file_states
+                file_state = file_states
                     .entry(data_hidx)
                     .insert_entry(FileState {
                         root_hash: data_hidx,
@@ -401,6 +476,8 @@ impl Client {
                         leaf_hashes,
                         leaf_hashes_correct: false,
                         leaves_complete: false,
+                        last_time_recved: t_long_ago,
+                        last_time_requested: t_long_ago,
                     })
                     .into_mut();
 
@@ -412,9 +489,17 @@ impl Client {
                     file_state.update_leaves_complete(&leaf_states);
                 }
             }
+
+            is_incomplete_file = !file_state.leaves_complete;
+            //TODO: do we also need to update timers here? (I don't think so)
         }
 
-        // TODO: tell data collector about new data
+        // TODO: tell data collector about new data => just request everything
+
+        if is_incomplete_file {
+            let mut desired_files = self.desired_files.lock().await;
+            desired_files.insert(data_hidx);
+        }
 
         return Ok(());
     }
@@ -428,7 +513,28 @@ impl Client {
     {
         // Only server needs to handle this
         debug!("Client: Ignoring RequestLeaves packet from {} for root hash {}", addr, base16::encode_lower(request_leaves_packet.root_hash));
-        //TODO: don't ignore, but use for deduplication
+
+        // update last_time_requested timestamps
+
+        let root_hidx = {
+            let merkle_pool = self.merkle_pool.lock().await;
+            merkle_pool.try_pool(request_leaves_packet.root_hash)
+        };
+
+        if let Some(root_hidx) = root_hidx {
+            {
+                let mut manifest_states = self.manifest_states.lock().await;
+                if let Some(manifest_state) = manifest_states.get_mut(&root_hidx) {
+                    manifest_state.last_time_requested = std::time::Instant::now();
+                }
+            }
+            {
+                let mut file_states = self.file_states.lock().await;
+                if let Some(file_state) = file_states.get_mut(&root_hidx) {
+                    file_state.last_time_requested = std::time::Instant::now();
+                }
+            }
+        }
 
         return Ok(());
     }
@@ -442,7 +548,8 @@ impl Client {
     {
         // Only server needs to handle this
         debug!("Client: Ignoring RequestLeaf packet from {} for root hash {}", addr, base16::encode_lower(request_leaf_packet.root_hash));
-        //TODO: don't ignore, but use for deduplication
+
+        //TODO: update timestamp (per leaf)
 
         return Ok(());
     }
@@ -489,6 +596,8 @@ impl Client {
             let leaf_idx = leaf_st_idx as usize;
             let _root_hidx = st_root_hidx;
 
+            file_state.last_time_recved = std::time::Instant::now();
+
             // Update file's leaf hashes
             if leaf_idx >= file_state.leaf_hashes.len() {
                 warn!("Got leaf index in Data packet that is out of bounds: {} >= {}", leaf_idx, file_state.leaf_hashes.len());
@@ -513,6 +622,8 @@ impl Client {
             packets: vec![],
             is_complete: false,
         });
+
+        // TODO: recv timestamp for LeafState?
 
         // Vice versa: make root known to leaf
         let was_inserted = leaf_state.subtrees_to_notify.insert(st_root_hidx);
@@ -705,7 +816,8 @@ impl Client {
     {
         // Only server needs to handle this. And feedback packets are not
         // deduplicated.
-        debug!("Client: Ignoring feedback packet from {} for {}", addr, base16::encode_lower(feedback_packet.server_ip));
+        debug!("Client: Ignoring feedback packet from {} for {}",
+                addr, base16::encode_lower(feedback_packet.server_ip));
 
         return Ok(());
     }
@@ -738,6 +850,85 @@ impl Client {
             protocol::packet::Packet::Feedback(feedback_packet) => {
                 return self.handle_packet_feedback(&feedback_packet, addr, len).await;
             }
+        }
+    }
+
+    // returns true if something was requested
+    async fn request_some_manifests(&self) -> Result<bool, AppError> {
+        let merkle_pool = self.merkle_pool.lock().await;
+        let mut desired_manifests = self.desired_manifests.lock().await;
+        let manifest_states = self.manifest_states.lock().await;
+
+        let mut to_remove: Vec<MerklePoolIdx> = vec![];
+        let mut did_find_something = false;
+        let t_now = std::time::Instant::now();
+
+        // just take any one
+        for hidx in desired_manifests.iter() {
+            if let Some(manifest_state) = manifest_states.get(hidx) {
+                if manifest_state.is_complete {
+                    debug!("Manifest complete, no longer desired.");
+                    to_remove.push(*hidx);
+                    continue;
+                }
+
+                if manifest_state.last_time_recved + MANIFEST_RECV_INACTIVITY_REREQUEST_TIMEOUT > t_now {
+                    continue; // did not time out yet
+                }
+                if manifest_state.last_time_requested + MANIFEST_REQ_INACTIVITY_REREQUEST_TIMEOUT > t_now {
+                    continue; // did not time out yet
+                }
+                if manifest_state.last_time_advertised + MANIFEST_AD_INACTIVITY_REREQUEST_TIMEOUT < t_now {
+                    // timed out
+                    to_remove.push(*hidx);
+                    continue;
+                }
+
+                // send the RequestLeaves packet
+                let root_hash = &merkle_pool.node(*hidx).hash;
+                let feedback_packet = protocol::packet::Packet::RequestLeaves(protocol::packet::RequestLeavesPacket {
+                    root_hash: root_hash,
+                });
+                self.socket.send_to(&protocol::encode_packet(feedback_packet)?, (self.multicast_addr, self.multicast_port)).await?;
+                debug!("Sent LeavesRequest for manifest {}", base16::encode_lower(root_hash));
+
+                did_find_something = true;
+                break;
+
+            } else {
+                warn!("Found hash in desired_manifests without manifest state.");
+            }
+        }
+
+        for hidx in to_remove {
+            desired_manifests.remove(&hidx);
+        }
+
+        return Ok(did_find_something);
+    }
+
+    // returns true if something was requested
+    async fn request_some_files(&self) -> Result<bool, AppError> {
+        let desired_files = self.desired_files.lock().await;
+        if desired_files.is_empty() {
+            return Ok(false);
+        }
+
+        //TODO
+
+        return Ok(false);
+    }
+
+    async fn requester_run(&self) -> Result<(), AppError> {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+            if self.request_some_manifests().await? {
+                continue; // if requesting manifests, don't request files
+            }
+
+            // TODO: maybe don't request any files if there's much traffic ongoing
+            self.request_some_files().await?;
         }
     }
 
