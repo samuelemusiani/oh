@@ -34,11 +34,11 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 | Merkle Tree Packet | ✅ | ✅ |
 | Feedback Request Packet | ✅ | ✅ |
 | Feedback Packet | ✅ | ✅ |
-| Stream Poll Packet | ❌ | ❌ |
-| Stream State Packet | ❌ | ❌ |
 | Congestion Control | ✅ | ✅ |
 | Multiple Servers | ✅ | ✅ |
-| Streams | No | No |
+| Stream Poll Packet | ❌ | ❌ |
+| Stream State Packet | ❌ | ❌ |
+| Streams | ❌ | ❌ |
 
 - [1]: Only uses `size bits = 00` as all supported files are less than 64 chunks. The protocol supports up to 320 _chunks_.
 - [2]: Only sends files, not nested directories. The protocol supports encoding them but server implementations need not generate them.
@@ -57,12 +57,12 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 | Merkle Tree Packet | ✅ | ✅ |
 | Feedback Request Packet | ✅ | ✅ |
 | Feedback Packet | ✅ | ✅ |
-| Stream Poll Packet | ❌ | ❌ |
-| Stream State Packet | ❌ | ❌ |
 | Congestion Control | ✅ | ✅ |
 | Multiple Servers | ✅ | ✅ |
-| Streams | No | No |
 | Loss handling | ✅ | ✅ |
+| Stream Poll Packet | ❌ | ❌ |
+| Stream State Packet | ❌ | ❌ |
+| Streams | ❌ | ❌ |
 
 ## Protocol spec issues
 
