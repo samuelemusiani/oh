@@ -30,17 +30,18 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 | Advertisement Packet | ✅ | ✅ |
 | Metadata Packet | ✅ | ✅ (files specifically)^[1]^[2]^[3] |
 | Request-Leaves Packet | ✅ | ✅ |
+| Request-Leaf Packet | ✅ | ✅ |
 | Data Packet | ✅ | ✅ |
 | Merkle Tree Packet | ✅ | ✅ |
 | Feedback Request Packet | ✅ | ✅ |
 | Feedback Packet | ✅ | ✅ |
-| Congestion Control | ✅ | ✅ |
+| Congestion Control | ✅ | ✅ (but slow) |
 | Multiple Servers | ✅ | ✅ |
 | Stream Poll Packet | ❌ | ❌ |
 | Stream State Packet | ❌ | ❌ |
 | Streams | ❌ | ❌ |
 
-- [1]: Only uses `size bits = 00` as all supported files are less than 64 chunks. The protocol supports up to 320 _chunks_.
+- [1]: Only uses `size bits = 00` as all supported files are less than `2**64` bytes. The protocol supports up to `2**320` _bytes_.
 - [2]: Only sends files, not nested directories. The protocol supports encoding them but server implementations need not generate them.
 - [3]: Streams are not supported, see lower in the table.
 
@@ -51,10 +52,11 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 | FEC | Null, SemiNull, XOR | Null |
 | Chunking | Fixed size | ✅ |
 | Advertisement Packet | ✅ | ✅ |
-| Metadata Packet | ✅ | ✅ |
+| Metadata Packet | ✅ | ✅ (files, like server) |
 | Request-Leaves Packet | ✅ | ✅ |
+| Request-Leaf Packet | ✅ | ✅ |
 | Data Packet | ✅ | ✅ |
-| Merkle Tree Packet | ✅ | ✅ |
+| Merkle Tree Packet | ✅ | not really utilized |
 | Feedback Request Packet | ✅ | ✅ |
 | Feedback Packet | ✅ | ✅ |
 | Congestion Control | ✅ | ✅ |
@@ -81,10 +83,10 @@ These issues include:
 * It is difficult to know when one has received the full manifest.
   If the client requests the leaves of a manifest, the server may answer with just Metadata packets.
   These packets do not include where in the merkle tree they are.
-  - If the client can guess the correct order of the metadata packets that the server has used to construct the merkle tree, it can try to construct the merkle tree of from metadata packets that it received and compare the root hash with the advertised manifest hash.
+  - If the client can guess the correct order of the metadata packets that the server has used to construct the merkle tree, it can try to construct the merkle tree from all metadata packets that it did receive and compare the root hash with the advertised manifest hash.
     However this is expensive and requires correctly guessing the order.
   - The spec says that the order is deterministic, but implementation-specific (see spec subsection 2.2.1).
-    We decided to use the same order in both implementations: order by metadata leaf hash.
+    We decided to use the same order in both implementations: order by data root hash.
   - One could also make the server send MerkleTree packets with a depth as high as possible before sending metadata.
 * Some fields are weirdly misaligned due to reserved fields.
   - This is mostly an accident / oversight due to the indirection with regards to the header in our chosen packet notation format.
@@ -151,8 +153,8 @@ These issues include:
 │   │   ├── Cargo.toml
 │   │   └── src
 │   │       ├── client
-│   │       │   ├── client.rs
-│   │       │   ├── merkle_pool.rs  	# pool of merkle nodes whilst building the tree
+│   │       │   ├── client.rs           # the client implementation
+│   │       │   ├── merkle_pool.rs  	# hash-pool (like a string-pool)
 │   │       │   └── mod.rs
 │   │       ├── error.rs
 │   │       ├── main.rs             	# CLI
