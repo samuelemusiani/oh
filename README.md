@@ -4,6 +4,86 @@ Implementations in Go and Rust for the Optimistic HIPPO (OH) protocol, the spec 
 
 ## Source Map
 
+```
+.
+├── flake.nix
+├── go
+│   ├── client
+│   │   ├── cc.go
+│   │   ├── client.go
+│   │   ├── file.go
+│   │   ├── helper.go
+│   │   ├── metadata.go
+│   │   ├── packet.go
+│   │   └── scheduler.go
+│   ├── cmd
+│   │   └── oh.go
+│   ├── default.nix # builds the go cli
+│   ├── go.mod
+│   ├── go.sum
+│   ├── graph.py
+│   ├── internal
+│   │   ├── chunker
+│   │   │   └── chunker.go
+│   │   ├── fec.go
+│   │   ├── merkle_tree
+│   │   │   ├── merkle_tree.go
+│   │   │   └── merkle_tree_test.go
+│   │   ├── multicast.go
+│   │   └── packet
+│   │       ├── advertisement.go
+│   │       ├── data.go
+│   │       ├── feedback.go
+│   │       ├── merkle_tree.go
+│   │       ├── metadata.go
+│   │       ├── packet.go
+│   │       └── request.go
+│   ├── mftp.go
+│   ├── runner.py
+│   └── server
+│       ├── cc.go
+│       ├── file.go
+│       ├── helper.go
+│       ├── packet.go
+│       ├── scheduler.go
+│       └── server.go
+├── nix
+│   ├── config.nix # constants
+│   ├── null-fec.patch # lets nix build the go implementation with and without FEC
+│   ├── seeded-random.nix # extended from template for random files
+│   ├── topologies.nix # extended from template with larger cross product
+│   └── util.nix # small helper functions
+├── rust
+│   ├── app
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── client
+│   │       │   ├── client.rs
+│   │       │   ├── merkle_pool.rs
+│   │       │   └── mod.rs
+│   │       ├── error.rs
+│   │       ├── main.rs
+│   │       └── server
+│   │           ├── cc.rs
+│   │           ├── data_queue.rs
+│   │           ├── mod.rs
+│   │           └── server.rs
+│   ├── Cargo.toml
+│   ├── default.nix # builds the rust crates
+│   └── protocol
+│       ├── Cargo.toml
+│       └── src
+│           ├── data.rs
+│           ├── error.rs
+│           ├── lib.rs
+│           ├── packet_owned.rs
+│           ├── packet.rs
+│           └── zc.rs
+└── typst
+    ├── omftp.pdf # spec as submitted in assignment 2
+    └── omftp.typ # source for the spec - build with `typst compile omftp.typ`
+```
+
 ## Running
 
 To build the implementations directly use the flake outputs `oh-go` and `oh-rs`.
@@ -75,7 +155,7 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 The implementations conform to the the protocol specification as submitted in assignment 2.
 
 There are however some issues that we found during implementation and would do differently in a follow-up version of the spec.
-For example, because they make the implementation unnecessarily difficult, or cause avoidable complexity.
+Either, because they make the implementation unnecessarily difficult or cause avoidable complexity.
 These issues include:
 
 * MerkleTree packets do not contain information of the location of the merkle tree, i.e. how deep the full merkle tree is below the sent subtree.
