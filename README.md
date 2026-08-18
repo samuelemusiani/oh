@@ -49,7 +49,6 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 | Feature | Go | Rust |
 | :-: | :-: | :-: |
 | FEC | Null, SemiNull, XOR | Null |
-| Hash function |  | Swappable? |
 | Chunking | Fixed size | ✅ |
 | Advertisement Packet | ✅ | ✅ |
 | Metadata Packet | ✅ | ✅ |
