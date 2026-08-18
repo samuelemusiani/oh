@@ -35,9 +35,10 @@ let
   # How the sender and the receivers are invoked, shared by all topologies.
   mcastAddr = "239.1.1.1";
   mcastPort = "5000";
-  #senderCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
-  senderCmd = { iface }: "${oh-rs}/bin/oh-rs -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
+  senderCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
+  #~ senderCmd = { iface }: "${oh-rs}/bin/oh-rs -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
   receiverCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} .";
+  #~ receiverCmd = { iface }: "${oh-rs}/bin/oh-rs -a ${mcastAddr} -t ${mcastPort} -i ${iface} .";
 
   # --- seeded pseudo-randomness --------------------------------------------
   inherit (import ./seeded-random.nix { inherit lib; } seed) rand uniform uniformInt;

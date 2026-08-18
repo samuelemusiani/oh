@@ -104,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
         info!("Shutting down server...");
         return Ok(());
     }
-    if let Some(download_directory) = args.download_dir && false /* TODO */ {
+    if let Some(download_directory) = args.download_dir {
         info!("Receiving into {}", download_directory.display());
         let client = Arc::new(Client::new(args.multicast_addr, iface_ip, args.port, download_directory).await?);
         info!("Client initialized, running...");

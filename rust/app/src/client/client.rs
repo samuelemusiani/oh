@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use log::{debug, error, trace, warn};
+use log::{debug, error, trace, warn, info};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
@@ -92,7 +92,7 @@ impl FileState {
         self.leaf_hashes_correct = merkle_tree[0] == merkle_pool.node(self.root_hash).hash;
 
         if self.leaf_hashes_correct {
-            debug!("Got correct leaf hashes for file {}", str::from_utf8(&self.name).unwrap_or("invalid utf8"));
+            info!("Got correct leaf hashes for file {}", str::from_utf8(&self.name).unwrap_or("invalid utf8"));
         }
     }
 
@@ -103,7 +103,7 @@ impl FileState {
         self.leaves_complete =
             self.leaf_hashes.iter().all(|leaf_hidx| if let Some(leaf_state) = leaf_states.get(&leaf_hidx) { leaf_state.is_complete } else { false });
         if self.leaves_complete {
-            debug!("Leaves complete for file {}", str::from_utf8(&self.name).unwrap_or("invalid utf8"));
+            info!("Leaves complete for file {}", str::from_utf8(&self.name).unwrap_or("invalid utf8"));
         }
     }
 }
@@ -142,6 +142,7 @@ impl LeafState {
         if let Some(hidx) = merkle_pool.try_pool(&hash) {
             if hidx == self.leaf_hash {
                 self.is_complete = true;
+                info!("Leaf completed.");
             }
         }
     }
@@ -190,7 +191,7 @@ impl ManifestState {
         self.is_complete = merkle_tree[0] == *root_hash;
 
         if self.is_complete {
-            debug!("Manifest {} is complete.", base16::encode_lower(root_hash));
+            info!("Manifest {} is complete.", base16::encode_lower(root_hash));
         }
     }
 }
@@ -410,7 +411,7 @@ impl Client {
         if let protocol::packet::MetadataPacketData::FileMetadata { merkle_tree_depth, size_bits, size, name_length, name } =
             metadata_packet.data
         {
-            let merkle_tree_depth = u8::from_be(merkle_tree_depth);
+            let merkle_tree_depth = merkle_tree_depth;
             // TODO: reject if merkle_tree_depth is too high
             let num_leaves = 1 << (merkle_tree_depth as usize);
             let name_length: usize = u8::from_be(name_length).into();
@@ -446,6 +447,9 @@ impl Client {
                     }
                     _ => None, // not supported
                 };
+                if num_leaves > 100 {
+                    debug!("large num_leaves: {}", num_leaves);
+                }
                 let leaf_hashes = vec![self.empty_chunk_hidx; num_leaves].into_boxed_slice();
                 file_state = file_states
                     .entry(data_hidx)
@@ -545,8 +549,10 @@ impl Client {
         let len = data_packet.length; // this is not big endian, I think (kinda awkward to convert here, btw...)
         debug!("Client: Handling Data packet from {} ({} bytes)", addr, len);
 
-        let leaf_st_idx = u32::from_be(data_packet.leaf_index);
-        let packet_idx = u32::from_be(data_packet.packet_index);
+        // let leaf_st_idx = u32::from_be(data_packet.leaf_index);
+        // let packet_idx = u32::from_be(data_packet.packet_index);
+        let leaf_st_idx = data_packet.leaf_index;
+        let packet_idx = data_packet.packet_index;
 
         let server_ip6 = match addr {
             SocketAddr::V4(addr_ip4) => addr_ip4.ip().to_ipv6_mapped(),
@@ -617,8 +623,11 @@ impl Client {
 
         // Store the data
         if !leaf_state.is_complete {
-            if packet_idx as usize > leaf_state.packets.len() {
+            if packet_idx as usize >= leaf_state.packets.len() {
                 leaf_state.packets.resize(packet_idx as usize + 1, None);
+                if packet_idx > 100 {
+                    debug!("big packet_idx: {}", packet_idx);
+                }
             }
             leaf_state.packets[packet_idx as usize] = Some(Box::from(data_packet.data));
 
@@ -647,7 +656,7 @@ impl Client {
         debug!("Client: Handling MerkleTree packet from {} for root hash {}",
                 addr, base16::encode_lower(merkle_tree_packet.root_hash));
 
-        let depth = usize::from(u8::from_be(merkle_tree_packet.depth));
+        let depth = usize::from(merkle_tree_packet.depth);
         assert!(merkle_tree_packet.nodes.len() == (1 << depth));
 
         fn binary_tree_size(depth: usize) -> usize {
