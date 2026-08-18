@@ -18,7 +18,7 @@ Implementations in Go and Rust for the Optimistic HIPPO (OH) protocol, the spec 
 │   │   └── scheduler.go
 │   ├── cmd
 │   │   └── oh.go
-│   ├── default.nix # builds the go cli
+│   ├── default.nix       	# builds the go cli
 │   ├── go.mod
 │   ├── go.sum
 │   ├── graph.py
@@ -48,11 +48,11 @@ Implementations in Go and Rust for the Optimistic HIPPO (OH) protocol, the spec 
 │       ├── scheduler.go
 │       └── server.go
 ├── nix
-│   ├── config.nix # constants
-│   ├── null-fec.patch # lets nix build the go implementation with and without FEC
-│   ├── seeded-random.nix # extended from template for random files
-│   ├── topologies.nix # extended from template with larger cross product
-│   └── util.nix # small helper functions
+│   ├── config.nix        	# constants
+│   ├── null-fec.patch    	# lets nix build the go implementation with and without FEC
+│   ├── seeded-random.nix 	# extended from template for random files
+│   ├── topologies.nix    	# extended from template with larger cross product
+│   └── util.nix          	# small helper functions
 ├── rust
 │   ├── app
 │   │   ├── Cargo.toml
@@ -69,7 +69,7 @@ Implementations in Go and Rust for the Optimistic HIPPO (OH) protocol, the spec 
 │   │           ├── mod.rs
 │   │           └── server.rs
 │   ├── Cargo.toml
-│   ├── default.nix # builds the rust crates
+│   ├── default.nix       	# builds the rust crates
 │   └── protocol
 │       ├── Cargo.toml
 │       └── src
@@ -80,8 +80,8 @@ Implementations in Go and Rust for the Optimistic HIPPO (OH) protocol, the spec 
 │           ├── packet.rs
 │           └── zc.rs
 └── typst
-    ├── omftp.pdf # spec as submitted in assignment 2
-    └── omftp.typ # source for the spec - build with `typst compile omftp.typ`
+    ├── omftp.pdf         	# spec as submitted in assignment 2
+    └── omftp.typ         	# source for the spec - build with `typst compile omftp.typ`
 ```
 
 ## Running
