@@ -21,7 +21,7 @@ pub fn combine_hashes(level: u8, left_hash: &Hash, right_hash: &Hash) -> Hash {
 }
 
 pub fn hash_empty_chunk() -> Hash {
-    hash_chunk(&[0u8])
+    hash_chunk(&[])
 }
 
 pub fn hash_chunk(chunk_data: &[u8]) -> Hash {
