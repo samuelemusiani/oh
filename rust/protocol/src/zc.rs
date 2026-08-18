@@ -129,14 +129,14 @@ impl RequestLeavesPacket {
 #[repr(C)]
 pub(crate) struct RequestLeafPacket {
     header: PacketHeader,
-    _reserved: u16,
-    pub index: u32,
+    _reserved: U16,
+    pub index: U32,
     pub root_hash: Hash,
 }
 
 impl RequestLeafPacket {
     pub fn new(root_hash: Hash, index: u32) -> Self {
-        Self { header: PacketHeader { version: 1, packet_type: PacketType::RequestLeaf }, _reserved: 0, index, root_hash }
+        Self { header: PacketHeader { version: 1, packet_type: PacketType::RequestLeaf }, _reserved: U16::new(0), index: U32::new(index), root_hash }
     }
 }
 

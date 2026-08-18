@@ -141,7 +141,7 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet<'_>, OHProtocolError> {
         }
         zc::PacketType::RequestLeaf => {
             let request_leaf = zc::RequestLeafPacket::try_ref_from_bytes(data)?;
-            return Ok(Packet::RequestLeaf(RequestLeafPacket { root_hash: &request_leaf.root_hash, index: request_leaf.index }));
+            return Ok(Packet::RequestLeaf(RequestLeafPacket { root_hash: &request_leaf.root_hash, index: request_leaf.index.into() }));
         }
         zc::PacketType::Data => {
             let data_packet = zc::DataPacket::try_ref_from_bytes(data)?;
