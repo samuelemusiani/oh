@@ -265,13 +265,25 @@ pub fn encode_packet(packet: Packet) -> Result<Vec<u8>, OHProtocolError> {
             return Ok(packet_bytes);
         }
         Packet::Feedback(feedback_packet) => {
-            let zc_packet = zc::FeedbackPacket::new(
-                feedback_packet.request_id,
-                feedback_packet.packet_index,
-                feedback_packet.number_of_packets_received,
-                *feedback_packet.server_ip,
-            );
-            return Ok(zc_packet.as_bytes().to_vec());
+            // let zc_packet = zc::FeedbackPacket::new(
+            //     feedback_packet.request_id,
+            //     feedback_packet.packet_index,
+            //     feedback_packet.number_of_packets_received,
+            //     *feedback_packet.server_ip,
+            // );
+            // return Ok(zc_packet.as_bytes().to_vec());
+            let header = zc::PacketHeader { version: 1, packet_type: zc::PacketType::Feedback };
+            let packet_bytes = [
+                header.as_bytes(),
+                feedback_packet.request_id.to_be_bytes().as_ref(),
+                0u16.to_be_bytes().as_ref(),
+                feedback_packet.packet_index.to_be_bytes().as_ref(),
+                feedback_packet.number_of_packets_received.to_be_bytes().as_ref(),
+                0u16.to_be_bytes().as_ref(),
+                feedback_packet.server_ip.as_bytes(),
+            ]
+            .concat();
+            return Ok(packet_bytes);
         }
     }
 }
