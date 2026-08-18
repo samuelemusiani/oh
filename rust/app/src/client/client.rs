@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool, atomic},
     io::Write,
 };
 
@@ -231,6 +231,10 @@ pub struct Client {
     manifest_states: Mutex<HashMap<MerklePoolIdx, ManifestState>>,
     file_states: Mutex<HashMap<MerklePoolIdx, FileState>>,
     leaf_states: Mutex<HashMap<MerklePoolIdx, LeafState>>,
+    // Used for deciding when to stop: If we have downloaded everything from one
+    // manifest, and have nothing more to do, work is done.
+    // (Subject to change.)
+    at_least_one_manifest_complete: AtomicBool,
 }
 
 impl Client {
@@ -287,6 +291,7 @@ impl Client {
             manifest_states: Default::default(),
             file_states: Default::default(),
             leaf_states: leaf_states.into(),
+            at_least_one_manifest_complete: false.into(),
         })
     }
 
@@ -353,6 +358,9 @@ impl Client {
                     .into_mut();
 
                 manifest_state.update_is_complete(&merkle_pool); // (can be true only if manifest is empty)
+                if manifest_state.is_complete {
+                    self.at_least_one_manifest_complete.store(true, atomic::Ordering::SeqCst);
+                }
                 is_manifest_complete = manifest_state.is_complete;
             }
         }
@@ -417,6 +425,9 @@ impl Client {
 
             if is_new_leaf_hash {
                 manifest_state.update_is_complete(&merkle_pool);
+                if manifest_state.is_complete {
+                    self.at_least_one_manifest_complete.store(true, atomic::Ordering::SeqCst);
+                }
             }
         }
 
@@ -938,6 +949,12 @@ impl Client {
         const MAX_REQUESTS: u32 = 20; // don't send more requets after we have this many
         let mut to_remove: Vec<MerklePoolIdx> = vec![];
         let t_now = std::time::Instant::now();
+
+        // try to stop client process if done
+        if desired_files.is_empty() &&
+                self.at_least_one_manifest_complete.load(atomic::Ordering::SeqCst) {
+            std::process::exit(0);
+        }
 
         for file_root_hidx in desired_files.iter() {
             let file_state = if let Some(file_state) = file_states.get_mut(file_root_hidx) {
