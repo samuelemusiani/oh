@@ -1,150 +1,33 @@
-# Multicast test topologies
-#
-# Every topology/parameter combination is exposed as one flake package, plus a
-# "-tmux" variant for interactive use and a "-svg" variant that renders the
-# topology to an SVG diagram (build it, don't run it):
-#   nix flake show                    # list all topologies
-#   nix run .#topo1-s1-d10-r5
-#   nix run .#topo2-a-tmux
-#   nix build .#topo3-svg
-#
-# Names carry the parameters that determine the topology's shape, so different
-# settings yield distinct, self-describing derivations:
-#   topo1-s<senderLoss%>-d<recvDelayMs>-r<recvLoss%>-n<nReceivers>
-#   (the Gilbert-Elliott case p=0.01, q=0.1 is labeled rp1q10; topo1 draws no
-#    random links, so its seed is not part of the name)
-#   topo2-a-<seed>-n<nReceivers>: p = q ~ U(0, 0.1)
-#   topo2-b-<seed>-n<nReceivers>: p ~ U(0, 0.1), q ~ U(0.05, 0.2)
-#   topo3-<seed> (fixed 9-receiver structure, independent of nReceivers)
-{ pkgs, nixnet, oh-go, oh-rs }:
+{ pkgs, nixnet, oh-go, oh-rs }@args:
 let
   inherit (pkgs) lib;
-
-  #testFile = pkgs.writeText "test.txt" "random text for testing purposes.";
-  testFile = pkgs.runCommand "reproducible-10mb-file.bin" {
-    nativeBuildInputs = [ pkgs.openssl ];
-  } ''
-    (openssl enc -aes-256-ctr -pass pass:"fixed-seed-phrase" -nosalt </dev/zero 2>/dev/null || true) | dd bs=4k iflag=fullblock count=5120 of=$out
-  ''; # 4k x 2560
+  inherit (import ./config.nix { inherit pkgs; }) commonConfig routerSysctl mcastAddr mcastPort smcrouteSetup commonLoss;
+  inherit (import ./util.nix args)  mkAll bdpLimit mkLeaf;
 
   # The seed determines all randomized link (topo 2 and 3)
   seed = "v1";
-  # Number of receivers in topologies 1 and 2
-  nReceivers = 5;
+  inherit (import ./seeded-random.nix { inherit lib pkgs; } seed) rand uniform uniformInt testFiles;
 
-  # How the sender and the receivers are invoked, shared by all topologies.
-  mcastAddr = "239.1.1.1";
-  mcastPort = "5000";
-  #senderCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
-  senderCmd = { iface }: "${oh-rs}/bin/oh-rs -a ${mcastAddr} -t ${mcastPort} -i ${iface} -s ${testFile}";
-  receiverCmd = { iface }: "${oh-go}/bin/cmd -a ${mcastAddr} -t ${mcastPort} -i ${iface} .";
+  goCmd = "${oh-go}/bin/cmd";
+  rsCmd = "${oh-rs}/bin/oh-rs";
+
+  senderScripts = cmd: enableTmux: lib.optionalAttrs (!enableTmux) {
+    sender.exec = "${cmd} -a ${mcastAddr} -t ${mcastPort} -i veth0 -s ${testFiles [ 1 64 ]}";
+  };
+  receiverScripts = cmd: {
+    receiver = {
+      exec = "${cmd} -a ${mcastAddr} -t ${mcastPort} -i veth0 .";
+      await = true;
+    };
+  };
 
   # --- seeded pseudo-randomness --------------------------------------------
-  inherit (import ./seeded-random.nix { inherit lib; } seed) rand uniform uniformInt;
-
   # Loss probabilities are drawn uniformly but rounded to 3 decimal digits
-  uniformLoss =
-    label: lo: hi:
-    builtins.floor (uniform label lo hi * 1000 + 0.5) / 1000.0;
-
-  # Queue limit for a link in packets: the bandwidth-delay product (rounded up,
-  # assuming 1500-byte MTU; mirrors nixnet's netem.autoLimit formula) plus a
-  # random extra buffer Q ~ U(20, 100).
-  bdpLimit = { rateMbit, delayMs, label }:
-    let
-      bdp = rateMbit * 1000000 / 8 * delayMs / 1000.0 / 1500;
-      q = uniformInt "${label}:q" 20 100;
-    in builtins.ceil bdp + q;
-
-  # --- shared testbed configuration ----------------------------------------
-  commonConfig = enableTmux: {
-    arp = false;
-    arpPrefill = true;
-    nodePackages = with pkgs; [
-      coreutils bash
-      iproute2 iputils
-      tcpdump smcroute
-    ];
-    testbedPackages = lib.mkOptionDefault (
-      [ pkgs.smcroute ] ++ lib.optionals enableTmux [ pkgs.tmux ]
-    );
-    scripts = lib.optionalAttrs enableTmux {
-      tmux-menu = {
-        # Taken from https://github.com/birneee/nixnet/blob/main/examples/tmux/flake.nix
-        foreground = true;
-        exec = ''
-          SOCKET=/tmp/nixnet.sock
-          SESSION=nixnet
-          MENU_CMD='display-menu -T " New " -x 0 -y S'
-          _new_session=true
-          i=0
-          for ns in /pwd/*; do
-            if [ ! -d "$ns" ]; then continue; fi
-            ns="$(basename -- "$ns")"
-            if  [ "$_new_session" = true ]; then
-                tmux -S $SOCKET -f ${./tmux.conf} new-session -d -s $SESSION -n "$ns" -- jail enter "$ns" bash
-                _new_session=false
-            else
-                tmux -S $SOCKET new-window -t $SESSION -n "$ns" -- jail enter "$ns" bash
-            fi
-            MENU_CMD="$MENU_CMD \"$ns\" \"$i\" \"new-window -n $ns -- jail enter $ns bash\""
-            i=$((i+1))
-          done
-          MENU_CMD="$MENU_CMD \"\"" # divider in menu
-          MENU_CMD="$MENU_CMD \"Exit Lab\" q \"confirm-before -p \\\"Exit session? (y/n)\\\" detach-client\""
-          tmux -S $SOCKET bind-key m "$MENU_CMD"
-          tmux -S $SOCKET bind-key -n MouseDown1StatusLeft "$MENU_CMD"
-          tmux -S /tmp/nixnet.sock attach-session -t $SESSION
-        '';
-      };
-    };
-  };
-
-  routerSysctl = {
-    "net.ipv4.ip_forward" = true;
-    "net.ipv4.conf.all.rp_filter" = 0;
-    "net.ipv4.conf.default.rp_filter" = 0;
-    # Reduce noise by disabling IPv6
-    "net.ipv6.conf.all.disable_ipv6" = 1;
-  };
-
-  # Install static multicast forwarding
-  smcrouteSetup = { ns, iif, oifs }:
-    let
-      allIfs = [ iif ] ++ oifs;
-      mkRoute = inIf: ''
-        echo 'mroute from ${inIf} group ${mcastAddr} to ${lib.concatStringsSep " " (lib.remove inIf allIfs)}' >> "$conf"
-      '';
-    in
-    ''
-      conf=/tmp/smcroute-${ns}.conf
-      > "$conf"
-      ${lib.concatMapStrings mkRoute allIfs}
-      smcrouted -I smcroute-${ns} -f "$conf"
-    '';
-
-  # A leaf node (sender or receiver) with a single interface veth0
-  mkLeaf = { addr, gw, scripts ? { } }: {
-    networking.interfaces.veth0.ipv4 = {
-      addresses = [ { address = addr; prefixLength = 24; } ];
-      routes = [ { address = "0.0.0.0"; prefixLength = 0; via = gw; } ];
-    };
-    inherit scripts;
-  };
-
-  senderScripts =
-    enableTmux:
-    lib.optionalAttrs (!enableTmux) {
-      sender = { exec = senderCmd { iface = "veth0"; }; };
-    };
-  receiverScripts.receiver = {
-    exec = receiverCmd { iface = "veth0"; };
-    await = true;
-  };
+  uniformLoss = label: lo: hi: builtins.floor (uniform label lo hi * 1000 + 0.5) / 1000.0;
 
   # --- star topology (topologies 1 and 2) -----------------------------------
   # Central router; the sender is on 10.0.1.0/24, receiver k on 10.0.(k+1).0/24.
-  mkStarConfig = { name, enableTmux, senderLink, receiverLinks }:
+  mkStarConfig = { name, enableTmux, senderLink, receiverLinks, sender, receiver }:
     let
       n = lib.length receiverLinks;
       routerAddr = i: "10.0.${toString i}.1";
@@ -176,7 +59,7 @@ let
         sender = mkLeaf {
           addr = "10.0.1.2";
           gw = routerAddr 1;
-          scripts = senderScripts enableTmux;
+          scripts = sender enableTmux;
         };
       } // lib.listToAttrs (
         lib.imap1 (k: link: {
@@ -184,7 +67,7 @@ let
           value = mkLeaf {
             addr = "10.0.${toString (k + 1)}.2";
             gw = routerAddr (k + 1);
-            scripts = receiverScripts;
+            scripts = receiver;
           };
         }) receiverLinks
       );
@@ -199,43 +82,45 @@ let
   # --- topology 1: homogeneous star -----------------------------------------
   topo1Variants =
     let
-      senderLosses = [
-        { label = "s0"; loss.percent = 0.0; }
-        { label = "s001"; loss.percent = 0.01; }
-        { label = "s005"; loss.percent = 0.05; }
-      ];
+      senderLosses = commonLoss;
       delays = [ 1 10 100 ];
-      recvLosses = [
-        { label = "r0"; loss.percent = 0; }
-        { label = "r001"; loss.percent = 0.01; }
-        { label = "r005"; loss.percent = 0.05; }
-        {
-          label = "rp001q01";
-          loss = {
-            model = "gemodel";
-            percent = 0.01;
-            r = 1 - 0.1;
-            h = 100;
-            k = 0;
-          };
-        }
+      recvLosses = commonLoss ++ [{
+        label = "p001q01";
+        loss = {
+          model = "gemodel";
+          percent = 0.01;
+          r = 1 - 0.1;
+          h = 100;
+          k = 0;
+        };
+      }];
+      nReceivers = [ 1 2 5 10 ];
+      receivers = [
+        { name = "go"; cmd = receiverScripts goCmd; }
+        { name = "rs"; cmd = receiverScripts rsCmd; }
+      ];
+      senders = [
+        { name = "go"; cmd = senderScripts goCmd; }
+        { name = "rs"; cmd = senderScripts rsCmd; }
       ];
     in
     map
       (
-        { s, d, r }: rec {
-          name = "topo1-${s.label}-d${toString d}-${r.label}-n${toString nReceivers}";
+        { s, d, r, n, senders, receivers }: rec {
+          name = "topo1-s${s.label}-d${toString d}-r${r.label}-n${toString n}-s${senders.name}-r${receivers.name}";
           mkCfg =
             enableTmux:
             mkStarConfig {
               inherit name enableTmux;
+              sender = senders.cmd;
+              receiver = receivers.cmd;
               senderLink = {
                 delayMs = 10;
                 rateMbit = 10;
                 limit = 20;
                 inherit (s) loss;
               };
-              receiverLinks = lib.replicate nReceivers {
+              receiverLinks = lib.replicate n {
                 delayMs = d;
                 rateMbit = 10;
                 limit = 20;
@@ -249,18 +134,21 @@ let
           s = senderLosses;
           d = delays;
           r = recvLosses;
+          n = nReceivers;
+          inherit senders receivers;
         }
       );
 
   # --- topology 2: heterogeneous star ----------------------------------------
   topo2Variants =
-    let
-      mkVariant = label: lossFor: rec {
-        name = "topo2-${label}-${seed}-n${toString nReceivers}";
-        mkCfg =
-          enableTmux:
-          mkStarConfig {
+    map
+      (
+        { senders, receivers, n, lossVariant }: rec {
+          name = "topo2-${lossVariant.label}-${seed}-n${toString n}-s${senders.name}-r${receivers.name}";
+          mkCfg = enableTmux: mkStarConfig {
             inherit name enableTmux;
+            sender = senders.cmd;
+            receiver = receivers.cmd;
             senderLink = {
               delayMs = 10;
               rateMbit = 20;
@@ -275,32 +163,42 @@ let
               in
               {
                 inherit rateMbit delayMs;
-                inherit (lossFor k) loss;
+                inherit (lossVariant.for k) loss;
                 limit = bdpLimit {
-                  inherit rateMbit delayMs;
+                  inherit uniformInt rateMbit delayMs;
                   label = "topo2:recv${toString k}";
                 };
               }
-            ) (lib.range 1 nReceivers);
+            ) (lib.range 1 n);
           };
-      };
-    in
-    [
-      # Loss variant a: p = q ~ U(0, 0.1)
-      (mkVariant "a" (k: {
-        loss.percent = uniformLoss "topo2:recv${toString k}:p" 0.0 0.1;
-      }))
-      # Loss variant b: p ~ U(0, 0.1), q ~ U(0.05, 0.2)
-      (mkVariant "b" (k: {
-        loss = {
-          model = "gemodel";
-          percent = uniformLoss "topo2:recv${toString k}:p" 0.0 0.1;
-          r = 1 - uniformLoss "topo2:recv${toString k}:q" 0.05 0.2;
-          h = 100;
-          k = 0;
-        };
-      }))
-    ];
+        }
+      )
+      (
+        lib.cartesianProduct {
+          lossVariant = [
+            { label = "a"; for = k: { loss.percent = uniformLoss "topo2:recv${toString k}:p" 0.0 0.1; }; }
+            { label = "b"; for = k: {
+               loss = {
+                 model = "gemodel";
+                 percent = uniformLoss "topo2:recv${toString k}:p" 0.0 0.1;
+                 r = 1 - uniformLoss "topo2:recv${toString k}:q" 0.05 0.2;
+                 h = 100;
+                 k = 0;
+               };
+             };
+            }
+          ];
+          n = [ 1 2 5 10 ];
+          receivers = [
+            { name = "go"; cmd = receiverScripts goCmd; }
+            { name = "rs"; cmd = receiverScripts rsCmd; }
+          ];
+          senders = [
+            { name = "go"; cmd = senderScripts goCmd; }
+            { name = "rs"; cmd = senderScripts rsCmd; }
+          ];
+        }
+      );
 
   # --- topology 3: multihop, heterogeneous ----------------------------------
   # sender -> router0 -> { router1, recv-4, recv-5, router2 }
@@ -316,7 +214,7 @@ let
         in {
           inherit rateMbit delayMs;
           limit = bdpLimit {
-            inherit rateMbit delayMs;
+            inherit uniformInt rateMbit delayMs;
             label = "topo3:recv${toString k}";
           };
           loss = {
@@ -421,7 +319,7 @@ let
             sender = mkLeaf {
               addr = "10.0.1.2";
               gw = "10.0.1.1";
-              scripts = senderScripts enableTmux;
+              scripts = senderScripts goCmd enableTmux;
             };
           } // lib.listToAttrs (
             map (k: {
@@ -429,7 +327,7 @@ let
               value = mkLeaf {
                 addr = "${recvSubnet k}.2";
                 gw = "${recvSubnet k}.1";
-                scripts = receiverScripts;
+                scripts = receiverScripts goCmd;
               };
             }) recvKeys
           );
@@ -488,13 +386,4 @@ let
           );
         };
     };
-
-  allVariants = topo1Variants ++ topo2Variants ++ [ topo3Variant ];
-in lib.foldl' (
-  acc: v:
-  acc // {
-    ${v.name} = nixnet.mkExperiment (v.mkCfg false);
-    "${v.name}-tmux" = nixnet.mkExperiment (v.mkCfg true);
-    "${v.name}-svg" = nixnet.mkMermaidSvg (v.mkCfg false);
-  }
-) { } allVariants
+in mkAll (topo1Variants ++ topo2Variants ++ [ topo3Variant ])

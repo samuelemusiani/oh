@@ -3,7 +3,7 @@
 # Nix has no RNG builtin, and evaluation must stay pure/deterministic, so this
 # hashes `seed` plus a per-draw label into [0, 1). Every draw is deterministic
 # and independent of evaluation order; changing `seed` redraws everything.
-{ lib }:
+{ pkgs, lib }:
 seed:
 let
   hexDigit = {
@@ -37,4 +37,16 @@ rec {
   uniformInt =
     label: lo: hi:
     builtins.floor (uniform label lo (hi + 1));
+
+  testFiles = sizes: pkgs.runCommand "reproducible-test-files" {
+    nativeBuildInputs = [ pkgs.openssl ];
+  } ''
+    mkdir -p $out
+    idx=0
+    for s in ${lib.concatStringsSep " " (map toString sizes)}; do
+      (openssl enc -aes-256-ctr -pass pass:"${seed}-idx" -nosalt </dev/zero 2>/dev/null || true) \
+        | dd bs=1k count="$s" of="$out/$idx" iflag=fullblock 2>/dev/null
+      idx=$((idx + 1))
+    done
+  '';
 }
