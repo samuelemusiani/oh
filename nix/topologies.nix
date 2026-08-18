@@ -4,9 +4,8 @@ let
   inherit (import ./config.nix { inherit pkgs; }) commonConfig routerSysctl mcastAddr mcastPort smcrouteSetup commonLoss;
   inherit (import ./util.nix args)  mkAll bdpLimit mkLeaf;
 
-  # The seed determines all randomized link (topo 2 and 3)
   seed = "v1";
-  inherit (import ./seeded-random.nix { inherit lib pkgs; } seed) rand uniform uniformInt testFiles;
+  inherit (import ./seeded-random.nix { inherit lib pkgs; } seed) rand uniform uniformInt testFiles uniformLoss;
 
   goCmd = "${oh-go}/bin/cmd";
   goCmdNullFEC =
@@ -27,10 +26,6 @@ let
       await = true;
     };
   };
-
-  # --- seeded pseudo-randomness --------------------------------------------
-  # Loss probabilities are drawn uniformly but rounded to 3 decimal digits
-  uniformLoss = label: lo: hi: builtins.floor (uniform label lo hi * 1000 + 0.5) / 1000.0;
 
   # --- star topology (topologies 1 and 2) -----------------------------------
   # Central router; the sender is on 10.0.1.0/24, receiver k on 10.0.(k+1).0/24.

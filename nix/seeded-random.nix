@@ -37,6 +37,7 @@ rec {
   uniformInt =
     label: lo: hi:
     builtins.floor (uniform label lo (hi + 1));
+  uniformLoss = label: lo: hi: builtins.floor (uniform label lo hi * 1000 + 0.5) / 1000.0;
 
   testFiles = sizes: pkgs.runCommand "reproducible-test-files" {
     nativeBuildInputs = [ pkgs.openssl ];
