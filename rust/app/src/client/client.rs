@@ -157,7 +157,8 @@ impl LeafState {
 
 struct ManifestState {
     root_hash: MerklePoolIdx,
-    leaf_hashes: HashSet<MerklePoolIdx>,
+    // metadata hash -> data root hash
+    leaf_hashes: HashMap<MerklePoolIdx, MerklePoolIdx>,
     is_complete: bool,
     // The last time we recevied a Metadata packet for this manifest.
     // Only re-request manifest after a timeout.
@@ -183,11 +184,20 @@ impl ManifestState {
         }
 
         // build merkle tree
-        let mut leaf_hashes_sorted: Box<[Hash]> =
+        let mut leaf_hashes_sorted: Box<[(Hash, Hash)]> =
             self.leaf_hashes.iter()
-            .map(|hidx| merkle_pool.node(*hidx).hash)
+            .map(|(metadata_hidx, data_root_hidx)|
+                (merkle_pool.node(*metadata_hidx).hash, merkle_pool.node(*data_root_hidx).hash)
+            )
             .collect();
-        leaf_hashes_sorted.sort_unstable_by(|a, b| a.cmp(b));
+        leaf_hashes_sorted.sort_unstable_by(|(_a_m, a_d), (_b_m, b_d)| a_d.cmp(b_d));
+        let leaf_hashes_sorted: Box<[Hash]> =
+            leaf_hashes_sorted.into_iter()
+            .map(|(m, _d)| m)
+            .collect();
+
+        let leaf_hashes_sorted_strs: Box<str> = leaf_hashes_sorted.iter().map(|h| base16::encode_lower(h)).collect();
+        info!("leaf_hashes_sorted: {}", leaf_hashes_sorted_strs); //TODO:tmp
 
         let merkle_tree_height = leaf_hashes_sorted.len().next_power_of_two().ilog2() as u8;
 
@@ -196,6 +206,8 @@ impl ManifestState {
         // check if correct
         let root_hash = &merkle_pool.node(self.root_hash).hash;
         self.is_complete = merkle_tree[0] == *root_hash;
+        info!("Mainfest root is: {}, should: {}",
+                base16::encode_lower(&merkle_tree[0]), base16::encode_lower(root_hash)); //TODO:tmp
 
         if self.is_complete {
             info!("Manifest {} is complete.", base16::encode_lower(root_hash));
@@ -406,7 +418,7 @@ impl Client {
             manifest_state.last_time_advertised = t_now; // we count this as advertisement
 
             let (leaf_hidx, _) = merkle_pool.pool(&leaf_hash);
-            let is_new_leaf_hash = manifest_state.leaf_hashes.insert(leaf_hidx);
+            let is_new_leaf_hash = manifest_state.leaf_hashes.insert(leaf_hidx, data_hidx).is_none();
 
             if is_new_leaf_hash {
                 manifest_state.update_is_complete(&merkle_pool);
