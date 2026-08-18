@@ -45,7 +45,7 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 | Merkle Tree Packet | ✅ | ✅ |
 | Feedback Request Packet | ✅ | ✅ |
 | Feedback Packet | ✅ | ✅ |
-| Congestion Control | ✅ | ✅ (but slow) |
+| Congestion Control | ✅ | ✅ |
 | Multiple Servers | ✅ | ✅ |
 | Stream Poll Packet | ❌ | ❌ |
 | Stream State Packet | ❌ | ❌ |
