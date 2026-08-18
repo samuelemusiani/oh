@@ -196,9 +196,6 @@ impl ManifestState {
             .map(|(m, _d)| m)
             .collect();
 
-        let leaf_hashes_sorted_strs: Box<str> = leaf_hashes_sorted.iter().map(|h| base16::encode_lower(h)).collect();
-        info!("leaf_hashes_sorted: {}", leaf_hashes_sorted_strs); //TODO:tmp
-
         let merkle_tree_height = leaf_hashes_sorted.len().next_power_of_two().ilog2() as u8;
 
         let merkle_tree = build_merkle_tree(merkle_tree_height, &leaf_hashes_sorted, 0);
@@ -206,8 +203,6 @@ impl ManifestState {
         // check if correct
         let root_hash = &merkle_pool.node(self.root_hash).hash;
         self.is_complete = merkle_tree[0] == *root_hash;
-        info!("Mainfest root is: {}, should: {}",
-                base16::encode_lower(&merkle_tree[0]), base16::encode_lower(root_hash)); //TODO:tmp
 
         if self.is_complete {
             info!("Manifest {} is complete.", base16::encode_lower(root_hash));
@@ -842,13 +837,14 @@ impl Client {
     }
 
     async fn handle_packet(self: Arc<Self>, buf: Vec<u8>, addr: SocketAddr, len: usize) -> Result<(), AppError> {
-        let packet = protocol::parse_packet(&buf[..len])?;
+        let buf = &buf[..len];
+        let packet = protocol::parse_packet(buf)?;
         match packet {
             protocol::packet::Packet::Advertisement(advertisement_packet) => {
                 return self.handle_packet_advertisement(&advertisement_packet, addr, len).await;
             }
             protocol::packet::Packet::Metadata(metadata_packet) => {
-                let leaf_hash = hash_encoded_metadata_packet(&mut buf.clone());
+                let leaf_hash = hash_encoded_metadata_packet(&mut Box::from(buf));
                 return self.handle_packet_metadata(&metadata_packet, addr, len, leaf_hash).await;
             }
             protocol::packet::Packet::RequestLeaves(request_leaves_packet) => {
