@@ -44,7 +44,7 @@ rec {
     mkdir -p $out
     idx=0
     for s in ${lib.concatStringsSep " " (map toString sizes)}; do
-      (openssl enc -aes-256-ctr -pass pass:"${seed}-idx" -nosalt </dev/zero 2>/dev/null || true) \
+      (openssl enc -aes-256-ctr -pass pass:"${seed}-$idx" -nosalt </dev/zero 2>/dev/null || true) \
         | dd bs=1k count="$s" of="$out/$idx" iflag=fullblock 2>/dev/null
       idx=$((idx + 1))
     done

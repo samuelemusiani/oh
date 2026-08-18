@@ -18,8 +18,8 @@ let
   rsCmd = "${oh-rs}/bin/oh-rs";
   logSuff = ""; #"1> out.log 2> err.log";
 
-  senderScripts = cmd: enableTmux: lib.optionalAttrs (!enableTmux) {
-    sender.exec = "${cmd} -a ${mcastAddr} -t ${mcastPort} -i veth0 -s ${testFiles [ 1 64 ]} ${logSuff}";
+  senderScripts = cmd: fileSizes: enableTmux: lib.optionalAttrs (!enableTmux) {
+    sender.exec = "${cmd} -a ${mcastAddr} -t ${mcastPort} -i veth0 -s ${testFiles fileSizes} ${logSuff}";
   };
   receiverScripts = cmd: {
     receiver = {
@@ -112,16 +112,26 @@ let
         { name = "goN"; cmd = senderScripts goCmdNullFEC; }
         { name = "rs"; cmd = senderScripts rsCmd; }
       ];
+      fileSizes = [
+        [ 1 ]
+        [ 1 1 ]
+        [ 256 ]
+        [ 256 256 ]
+        [ 256 1 ]
+        [ 2560 ]
+      ];
     in
     map
       (
-        { s, d, r, n, senders, receivers }: rec {
-          name = "topo1-s${s.label}-d${toString d}-r${r.label}-n${toString n}-s${senders.name}-r${receivers.name}";
+        { s, d, r, n, senders, receivers, fileSizes }: rec {
+          name = let
+            fss = builtins.concatStringsSep "_" (map builtins.toString fileSizes);
+          in "topo1-s${s.label}-d${toString d}-r${r.label}-n${toString n}-s${senders.name}-r${receivers.name}-f_${fss}";
           mkCfg =
             enableTmux:
             mkStarConfig {
               inherit name enableTmux;
-              sender = senders.cmd;
+              sender = senders.cmd fileSizes;
               receiver = receivers.cmd;
               senderLink = {
                 delayMs = 10;
@@ -144,7 +154,7 @@ let
           d = delays;
           r = recvLosses;
           n = nReceivers;
-          inherit senders receivers;
+          inherit senders receivers fileSizes;
         }
       );
 
@@ -152,11 +162,13 @@ let
   topo2Variants =
     map
       (
-        { senders, receivers, n, lossVariant }: rec {
-          name = "topo2-${lossVariant.label}-${seed}-n${toString n}-s${senders.name}-r${receivers.name}";
+        { senders, receivers, n, lossVariant, fileSizes }: rec {
+          name = let
+            fss = builtins.concatStringsSep "_" (map builtins.toString fileSizes);
+          in "topo2-${lossVariant.label}-${seed}-n${toString n}-s${senders.name}-r${receivers.name}-f_${fss}";
           mkCfg = enableTmux: mkStarConfig {
             inherit name enableTmux;
-            sender = senders.cmd;
+            sender = senders.cmd fileSizes;
             receiver = receivers.cmd;
             senderLink = {
               delayMs = 10;
@@ -207,6 +219,14 @@ let
             { name = "go"; cmd = senderScripts goCmd; }
             { name = "goN"; cmd = senderScripts goCmdNullFEC; }
             { name = "rs"; cmd = senderScripts rsCmd; }
+          ];
+          fileSizes = [
+            [ 1 ]
+            [ 1 1 ]
+            [ 256 ]
+            [ 256 256 ]
+            [ 256 1 ]
+            [ 2560 ]
           ];
         }
       );
@@ -330,7 +350,7 @@ let
             sender = mkLeaf {
               addr = "10.0.1.2";
               gw = "10.0.1.1";
-              scripts = senderScripts goCmd enableTmux;
+              scripts = senderScripts goCmd [1 64] enableTmux;
             };
           } // lib.listToAttrs (
             map (k: {
