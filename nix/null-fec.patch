@@ -1,0 +1,26 @@
+diff --git a/go/client/client.go b/go/client/client.go
+index d571892..1f014fb 100644
+--- a/go/client/client.go
++++ b/go/client/client.go
+@@ -22,7 +22,7 @@ import (
+ )
+ 
+ const (
+-	fecType = internal.FECTypeXOR
++	fecType = internal.FECTypeNull
+ )
+ 
+ var (
+diff --git a/go/server/server.go b/go/server/server.go
+index bc3751d..e4210c4 100644
+--- a/go/server/server.go
++++ b/go/server/server.go
+@@ -23,7 +23,7 @@ import (
+ 
+ const (
+ 	advertisementInterval = 5 * time.Second
+-	fecType               = internal.FECTypeXOR
++	fecType               = internal.FECTypeNull
+ )
+ 
+ type Server struct {

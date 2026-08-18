@@ -9,6 +9,12 @@ let
   inherit (import ./seeded-random.nix { inherit lib pkgs; } seed) rand uniform uniformInt testFiles;
 
   goCmd = "${oh-go}/bin/cmd";
+  goCmdNullFEC =
+    let
+      oh-go-patched = oh-go.overrideAttrs (oldAttrs: {
+        patches = (oldAttrs.patches or []) ++ [ ./null-fec.patch ];
+      });
+    in  "${oh-go-patched}/bin/cmd";
   rsCmd = "${oh-rs}/bin/oh-rs";
   logSuff = ""; #"1> out.log 2> err.log";
 
@@ -98,10 +104,12 @@ let
       nReceivers = [ 1 2 5 10 ];
       receivers = [
         { name = "go"; cmd = receiverScripts goCmd; }
+        { name = "goN"; cmd = receiverScripts goCmdNullFEC; }
         { name = "rs"; cmd = receiverScripts rsCmd; }
       ];
       senders = [
         { name = "go"; cmd = senderScripts goCmd; }
+        { name = "goN"; cmd = senderScripts goCmdNullFEC; }
         { name = "rs"; cmd = senderScripts rsCmd; }
       ];
     in
@@ -192,10 +200,12 @@ let
           n = [ 1 2 5 10 ];
           receivers = [
             { name = "go"; cmd = receiverScripts goCmd; }
+            { name = "goN"; cmd = receiverScripts goCmdNullFEC; }
             { name = "rs"; cmd = receiverScripts rsCmd; }
           ];
           senders = [
             { name = "go"; cmd = senderScripts goCmd; }
+            { name = "goN"; cmd = senderScripts goCmdNullFEC; }
             { name = "rs"; cmd = senderScripts rsCmd; }
           ];
         }
