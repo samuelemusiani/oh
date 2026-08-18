@@ -270,16 +270,18 @@ impl<T: MerkleHash, E> MerkleTree<T, E> {
     }
 
     pub fn depth(&self) -> u8 {
-        let mut depth = 0;
-        let mut len = self.leaves.len();
-        if len % 2 != 0 {
-            len += 1;
-        }
-        while len > 1 {
-            len /= 2;
-            depth += 1;
-        }
-        depth
+        return self.leaves.len().next_power_of_two().ilog2() as u8;
+        //TODO: idk, this might've been wrong:
+        // let mut depth = 0;
+        // let mut len = self.leaves.len();
+        // if len % 2 != 0 {
+        //     len += 1;
+        // }
+        // while len > 1 {
+        //     len /= 2;
+        //     depth += 1;
+        // }
+        // depth
     }
 
     pub fn sub_tree(&self, hash: &Hash) -> Option<&Box<MerkleNode>> {

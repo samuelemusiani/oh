@@ -119,6 +119,8 @@ struct LeafState {
     is_complete: bool,
 }
 
+static TOTAL_COMPLETE_LEAVE_SIZE: std::sync::Mutex<usize> = std::sync::Mutex::new(0); // for debugging
+
 impl LeafState {
     #[allow(dead_code)]
     fn len(&self) -> usize {
@@ -142,7 +144,11 @@ impl LeafState {
         if let Some(hidx) = merkle_pool.try_pool(&hash) {
             if hidx == self.leaf_hash {
                 self.is_complete = true;
-                info!("Leaf completed.");
+                let size = self.len();
+                let mut total_size = TOTAL_COMPLETE_LEAVE_SIZE.lock().unwrap();
+                *total_size += size;
+                info!("Leaf completed: {} (total received completed Leaves: {} KiB)",
+                        base16::encode_lower(&hash), *total_size / 1024);
             }
         }
     }
@@ -745,15 +751,16 @@ impl Client {
         ) -> Result<(), AppError>
     {
         let req_id = feedback_request_packet.request_id;
-        debug!("Client: Handling FeedbackRequest from {} (reqest_id = {})", addr, req_id);
+        let timespan_ms = feedback_request_packet.timespan;
+        let num_feedbacks_to_send = feedback_request_packet.number_of_feedbacks;
+        debug!("Client: Handling FeedbackRequest from {} (reqest_id = {}, timespan_ms = {}, num_feedbacks = {})",
+                addr, req_id, timespan_ms, num_feedbacks_to_send);
 
         let server_ip6 = match addr {
             SocketAddr::V4(addr_ip4) => addr_ip4.ip().to_ipv6_mapped(),
             SocketAddr::V6(addr_ip6) => *addr_ip6.ip(),
         };
-        let timespan_ms = feedback_request_packet.timespan;
         let timespan = std::time::Duration::from_millis(timespan_ms.into());
-        let num_feedbacks_to_send = feedback_request_packet.number_of_feedbacks;
 
         if timespan_ms == 0 && num_feedbacks_to_send != 0 {
             warn!("FeedbackRequest has a timespan of 0 ms, but non-zero packets.");
@@ -1021,16 +1028,18 @@ impl Client {
             for (server_ip, feedback_state) in feedback_states.iter_mut() {
                 let tend = feedback_state.t_request_received + feedback_state.window_duration;
 
-                // timed out?
-                if tend >= tnow {
-                    to_delete.push(*server_ip);
-                    continue;
-                }
-
                 // finished?
                 if feedback_state.num_feedbacks_to_send <= feedback_state.num_feedbacks_sent {
                     to_delete.push(*server_ip);
+                    debug!("Feedback finished.");
                     continue;
+                }
+
+                // timed out?
+                if tend <= tnow {
+                    to_delete.push(*server_ip);
+                    debug!("Feedback state timed out.");
+                    // still send a last feedback
                 }
 
                 let t_next_send = if let Some(t_next_send) = feedback_state.t_next_send {
@@ -1047,7 +1056,7 @@ impl Client {
                 };
 
                 // time for next feedback packet?
-                if t_next_send >= tnow {
+                if t_next_send <= tnow {
                     let time_since_ms = (tnow - feedback_state.t_request_received).as_millis() as u64;
                     let window_timespan_ms = feedback_state.window_duration.as_millis() as u64;
                     let packet_idx = (u16::MAX as u64) * time_since_ms / window_timespan_ms;
@@ -1059,7 +1068,8 @@ impl Client {
                         server_ip: &server_ip.octets(),
                     });
                     self.socket.send_to(&protocol::encode_packet(feedback_packet)?, (self.multicast_addr, self.multicast_port)).await?;
-                    debug!("Sent feedback packet for {}", server_ip);
+                    debug!("Sent feedback packet for {} (num_packets: {})",
+                            server_ip, feedback_state.num_packets_received_in_window);
 
                     feedback_state.t_next_send = None;
                     feedback_state.num_feedbacks_sent += 1;
@@ -1072,7 +1082,7 @@ impl Client {
             }
 
             // TODO: awake me on feedback request, and sleep less long
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     }
 }
