@@ -6,82 +6,82 @@ Implementations in Go and Rust for the Optimistic HIPPO (OH) protocol, the spec 
 
 ```
 .
-├── flake.nix
-├── go
-│   ├── client
-│   │   ├── cc.go
-│   │   ├── client.go
-│   │   ├── file.go
-│   │   ├── helper.go
-│   │   ├── metadata.go
-│   │   ├── packet.go
-│   │   └── scheduler.go
-│   ├── cmd
-│   │   └── oh.go
-│   ├── default.nix       	# builds the go cli
-│   ├── go.mod
-│   ├── go.sum
-│   ├── graph.py
-│   ├── internal
-│   │   ├── chunker
-│   │   │   └── chunker.go
-│   │   ├── fec.go
-│   │   ├── merkle_tree
-│   │   │   ├── merkle_tree.go
-│   │   │   └── merkle_tree_test.go
-│   │   ├── multicast.go
-│   │   └── packet
-│   │       ├── advertisement.go
-│   │       ├── data.go
-│   │       ├── feedback.go
-│   │       ├── merkle_tree.go
-│   │       ├── metadata.go
-│   │       ├── packet.go
-│   │       └── request.go
-│   ├── mftp.go
-│   ├── runner.py
-│   └── server
-│       ├── cc.go
-│       ├── file.go
-│       ├── helper.go
-│       ├── packet.go
-│       ├── scheduler.go
-│       └── server.go
-├── nix
-│   ├── config.nix        	# constants
-│   ├── null-fec.patch    	# lets nix build the go implementation with and without FEC
-│   ├── seeded-random.nix 	# extended from template for random files
-│   ├── topologies.nix    	# extended from template with larger cross product
-│   └── util.nix          	# small helper functions
-├── rust
-│   ├── app
-│   │   ├── Cargo.toml
-│   │   └── src
-│   │       ├── client
-│   │       │   ├── client.rs
-│   │       │   ├── merkle_pool.rs
-│   │       │   └── mod.rs
-│   │       ├── error.rs
-│   │       ├── main.rs
-│   │       └── server
-│   │           ├── cc.rs
-│   │           ├── data_queue.rs
-│   │           ├── mod.rs
-│   │           └── server.rs
-│   ├── Cargo.toml
-│   ├── default.nix       	# builds the rust crates
-│   └── protocol
-│       ├── Cargo.toml
-│       └── src
-│           ├── data.rs
-│           ├── error.rs
-│           ├── lib.rs
-│           ├── packet_owned.rs
-│           ├── packet.rs
-│           └── zc.rs
-└── typst
-    ├── omftp.pdf         	# spec as submitted in assignment 2
-    └── omftp.typ         	# source for the spec - build with `typst compile omftp.typ`
+├── flake.nix                       	#
+├── go                              	#
+│   ├── client                      	#
+│   │   ├── cc.go                   	#
+│   │   ├── client.go               	#
+│   │   ├── file.go                 	#
+│   │   ├── helper.go               	#
+│   │   ├── metadata.go             	#
+│   │   ├── packet.go               	#
+│   │   └── scheduler.go            	#
+│   ├── cmd                         	#
+│   │   └── oh.go                   	#
+│   ├── default.nix                 	# builds the go cli
+│   ├── go.mod                      	#
+│   ├── go.sum                      	#
+│   ├── graph.py                    	#
+│   ├── internal                    	#
+│   │   ├── chunker                 	#
+│   │   │   └── chunker.go          	#
+│   │   ├── fec.go                  	#
+│   │   ├── merkle_tree             	#
+│   │   │   ├── merkle_tree.go      	#
+│   │   │   └── merkle_tree_test.go 	#
+│   │   ├── multicast.go            	#
+│   │   └── packet                  	#
+│   │       ├── advertisement.go    	#
+│   │       ├── data.go             	#
+│   │       ├── feedback.go         	#
+│   │       ├── merkle_tree.go      	#
+│   │       ├── metadata.go         	#
+│   │       ├── packet.go           	#
+│   │       └── request.go          	#
+│   ├── mftp.go                     	#
+│   ├── runner.py                   	#
+│   └── server                      	#
+│       ├── cc.go                   	#
+│       ├── file.go                 	#
+│       ├── helper.go               	#
+│       ├── packet.go               	#
+│       ├── scheduler.go            	#
+│       └── server.go               	#
+├── nix                             	#
+│   ├── config.nix                  	# constants
+│   ├── null-fec.patch              	# lets nix build the go implementation with and without FEC
+│   ├── seeded-random.nix           	# extended from template for random files
+│   ├── topologies.nix              	# extended from template with larger cross product
+│   └── util.nix                    	# small helper functions
+├── rust                            	#
+│   ├── app                         	#
+│   │   ├── Cargo.toml              	#
+│   │   └── src                     	#
+│   │       ├── client              	#
+│   │       │   ├── client.rs       	#
+│   │       │   ├── merkle_pool.rs  	#
+│   │       │   └── mod.rs          	#
+│   │       ├── error.rs            	#
+│   │       ├── main.rs             	#
+│   │       └── server              	#
+│   │           ├── cc.rs           	#
+│   │           ├── data_queue.rs   	#
+│   │           ├── mod.rs          	#
+│   │           └── server.rs       	#
+│   ├── Cargo.toml                  	#
+│   ├── default.nix                 	# builds the rust crates
+│   └── protocol                    	#
+│       ├── Cargo.toml              	#
+│       └── src                     	#
+│           ├── data.rs             	#
+│           ├── error.rs            	#
+│           ├── lib.rs              	#
+│           ├── packet_owned.rs     	#
+│           ├── packet.rs           	#
+│           └── zc.rs               	#
+└── typst                           	#
+    ├── omftp.pdf                  	# spec as submitted in assignment 2
+    └── omftp.typ                  	# source for the spec - build with `typst compile omftp.typ`
 ```
 
 ## Running
