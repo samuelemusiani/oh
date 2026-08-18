@@ -6,80 +6,80 @@ Implementations in Go and Rust for the Optimistic HIPPO (OH) protocol, the spec 
 
 ```
 .
-├── flake.nix                       	#
-├── go                              	#
-│   ├── client                      	#
-│   │   ├── cc.go                   	#
-│   │   ├── client.go               	#
-│   │   ├── file.go                 	#
-│   │   ├── helper.go               	#
-│   │   ├── metadata.go             	#
-│   │   ├── packet.go               	#
-│   │   └── scheduler.go            	#
-│   ├── cmd                         	#
-│   │   └── oh.go                   	#
+├── flake.nix
+├── go
+│   ├── client
+│   │   ├── cc.go                   	# handles per-server feedback - responding to feedback request packets
+│   │   ├── client.go               	# send/receive loops for the client
+│   │   ├── file.go                 	# turns received chunks into trees and writes files
+│   │   ├── helper.go
+│   │   ├── metadata.go             	# follows up on advertisements and processes the resulting metadata
+│   │   ├── packet.go
+│   │   └── scheduler.go            	# handles server communication, retries and scheduling
+│   ├── cmd
+│   │   └── oh.go                   	# cli
 │   ├── default.nix                 	# builds the go cli
-│   ├── go.mod                      	#
-│   ├── go.sum                      	#
-│   ├── graph.py                    	#
-│   ├── internal                    	#
-│   │   ├── chunker                 	#
-│   │   │   └── chunker.go          	#
-│   │   ├── fec.go                  	#
-│   │   ├── merkle_tree             	#
-│   │   │   ├── merkle_tree.go      	#
-│   │   │   └── merkle_tree_test.go 	#
-│   │   ├── multicast.go            	#
-│   │   └── packet                  	#
-│   │       ├── advertisement.go    	#
-│   │       ├── data.go             	#
-│   │       ├── feedback.go         	#
-│   │       ├── merkle_tree.go      	#
-│   │       ├── metadata.go         	#
-│   │       ├── packet.go           	#
-│   │       └── request.go          	#
-│   ├── mftp.go                     	#
-│   ├── runner.py                   	#
-│   └── server                      	#
-│       ├── cc.go                   	#
-│       ├── file.go                 	#
-│       ├── helper.go               	#
-│       ├── packet.go               	#
-│       ├── scheduler.go            	#
-│       └── server.go               	#
-├── nix                             	#
+│   ├── go.mod
+│   ├── go.sum
+│   ├── graph.py                    	# script to plot throughput
+│   ├── internal
+│   │   ├── chunker
+│   │   │   └── chunker.go          	# implements fixed size chunking
+│   │   ├── fec.go                  	# implements null, semi null, and xor FECs
+│   │   ├── merkle_tree
+│   │   │   ├── merkle_tree.go      	# turns chunks into a merkle tree
+│   │   │   └── merkle_tree_test.go
+│   │   ├── multicast.go            	# abstracts over multicast specifics
+│   │   └── packet                  	# encode and decode all packets to the wire
+│   │       ├── advertisement.go
+│   │       ├── data.go
+│   │       ├── feedback.go
+│   │       ├── merkle_tree.go
+│   │       ├── metadata.go
+│   │       ├── packet.go
+│   │       └── request.go
+│   ├── mftp.go
+│   ├── runner.py                   	# script for testing
+│   └── server
+│       ├── cc.go                   	# aggregates feedback and selects data rate
+│       ├── file.go
+│       ├── helper.go
+│       ├── packet.go
+│       ├── scheduler.go            	# sends and schedules packets to clients, priority and packet size handling
+│       └── server.go               	# main loops for the server
+├── nix
 │   ├── config.nix                  	# constants
 │   ├── null-fec.patch              	# lets nix build the go implementation with and without FEC
 │   ├── seeded-random.nix           	# extended from template for random files
 │   ├── topologies.nix              	# extended from template with larger cross product
 │   └── util.nix                    	# small helper functions
-├── rust                            	#
-│   ├── app                         	#
-│   │   ├── Cargo.toml              	#
-│   │   └── src                     	#
-│   │       ├── client              	#
-│   │       │   ├── client.rs       	#
-│   │       │   ├── merkle_pool.rs  	#
-│   │       │   └── mod.rs          	#
-│   │       ├── error.rs            	#
-│   │       ├── main.rs             	#
-│   │       └── server              	#
-│   │           ├── cc.rs           	#
-│   │           ├── data_queue.rs   	#
-│   │           ├── mod.rs          	#
-│   │           └── server.rs       	#
-│   ├── Cargo.toml                  	#
+├── rust
+│   ├── app
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── client
+│   │       │   ├── client.rs
+│   │       │   ├── merkle_pool.rs  	# pool of merkle nodes whilst building the tree
+│   │       │   └── mod.rs
+│   │       ├── error.rs
+│   │       ├── main.rs             	# CLI
+│   │       └── server
+│   │           ├── cc.rs           	# handle feedback packets and adjust sending rate
+│   │           ├── data_queue.rs   	# packet queue that handles asynchrounous sending
+│   │           ├── mod.rs
+│   │           └── server.rs
+│   ├── Cargo.toml
 │   ├── default.nix                 	# builds the rust crates
-│   └── protocol                    	#
-│       ├── Cargo.toml              	#
-│       └── src                     	#
-│           ├── data.rs             	#
-│           ├── error.rs            	#
-│           ├── lib.rs              	#
-│           ├── packet_owned.rs     	#
-│           ├── packet.rs           	#
-│           └── zc.rs               	#
-└── typst                           	#
+│   └── protocol
+│       ├── Cargo.toml
+│       └── src
+│           ├── data.rs             	# build a merkle tree and create data chunks
+│           ├── error.rs
+│           ├── lib.rs              	# exposes packet encode/decode and creating manifests
+│           ├── packet_owned.rs
+│           ├── packet.rs           	# internal packet definitions
+│           └── zc.rs               	# packet layout definitions
+└── typst
     ├── omftp.pdf                   	# spec as submitted in assignment 2
     └── omftp.typ                   	# source for the spec - build with `typst compile omftp.typ`
 ```
@@ -108,24 +108,23 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 | Feature | Go | Rust |
 | :-: | :-: | :-: |
 | FEC | Null, SemiNull, XOR | Null |
-| Hash function |  | Swappable? |
 | Chunking | Fixed size | Fixed size and Content Defined |
-| Advertisement Packet |  |  |
-| Metadata Packet |  | Yes (files specifically)^[1]^[2]^[3] |
-| Request-Leaves Packet |  |  |
-| Data Packet |  |  |
-| Merkle Tree Packet |  |  |
-| Feedback Request Packet |  |  |
-| Feedback Packet |  |  |
-| Stream Poll Packet |  |  |
-| Stream State Packet |  |  |
-| Congestion Control |  |  |
-| De-duplication |  |  |
-| Multiple Servers |  |  |
+| Advertisement Packet | ✅ | ✅ |
+| Metadata Packet | ✅ | ✅ (files specifically)^[1]^[2]^[3] |
+| Request-Leaves Packet | ✅ | ✅ |
+| Data Packet | ✅ | ✅ |
+| Merkle Tree Packet | ✅ | ✅ |
+| Feedback Request Packet | ✅ | ✅ |
+| Feedback Packet | ✅ | ✅ |
+| Stream Poll Packet | ❌ | ❌ |
+| Stream State Packet | ❌ | ❌ |
+| Congestion Control | ✅ | ✅ |
+| Multiple Servers | ✅ | ✅ |
 | Streams | No | No |
 
 [1]: Only uses `size bits = 00` as all supported files are less than 64 chunks. The protocol supports up to 320 _chunks_.
 [2]: Only sends files, not nested directories. The protocol supports encoding them but server implementations need not generate them.
+
 [3]: Streams are not supported, see lower in the table.
 
 ### Client
@@ -134,21 +133,20 @@ Generally, the Go implementation is "smarter" but it supports interoperating wit
 | :-: | :-: | :-: |
 | FEC | Null, SemiNull, XOR | Null |
 | Hash function |  | Swappable? |
-| Chunking |  |  |
-| Advertisement Packet |  |  |
-| Metadata Packet |  |  |
-| Request-Leaves Packet |  |  |
-| Data Packet |  |  |
-| Merkle Tree Packet |  |  |
-| Feedback Request Packet |  |  |
-| Feedback Packet |  |  |
-| Stream Poll Packet |  |  |
-| Stream State Packet |  |  |
-| Congestion Control |  |  |
-| De-duplication |  |  |
-| Multiple Servers |  |  |
+| Chunking | Fixed size | ✅ |
+| Advertisement Packet | ✅ | ✅ |
+| Metadata Packet | ✅ | ✅ |
+| Request-Leaves Packet | ✅ | ✅ |
+| Data Packet | ✅ | ✅ |
+| Merkle Tree Packet | ✅ | ✅ |
+| Feedback Request Packet | ✅ | ✅ |
+| Feedback Packet | ✅ | ✅ |
+| Stream Poll Packet | ❌ | ❌ |
+| Stream State Packet | ❌ | ❌ |
+| Congestion Control | ✅ | ✅ |
+| Multiple Servers | ✅ | ✅ |
 | Streams | No | No |
-| Loss handling |  |  |
+| Loss handling | ✅ | ✅ |
 
 ## Protocol spec issues
 
@@ -179,12 +177,5 @@ These issues include:
   - OH allows variable length chunking, so there is no-longer a consistent index-to-offset mapping.
 * Leaves don't have a length or last-packet bit so the only way to verify if you have the whole leaf is to hash it.
   - This is also an artifact of being taken from a protocol where this wasn't needed.
+* Do we really need size in file metadata that is > 64 bit?
 
-More points (TODO: format properly):
-
-* could also have smaller manifests (and multiple manifests per server), and send whole manifest in one packet
-* leaf has no packet data offset => difficult to write to buffer
-* for data merkle trees, it would also be useful to have the merkle tree available up-front, to check if a leaf really belongs to a file.
-  And to not have to re-request all data if one leaf hash is wrong.
-* Leaf packets don't need root hash if we always had merkle tree available.
-* (do we really need size in file metadata that is > 64 bit?)
