@@ -15,7 +15,17 @@ To see the full list of options run `nix flake show`, not all have been tested.
 
 ## Feature support
 
-Overall, server-go/NullFEC can successfully serve files to client-go/NullFEC and client-rs, server-go/XorFEC can successfully serve files to client-go/XorFEC; and server-rs can serve to client-rs and client-go/NullFEC.
+The compability between different implementations is shown below.
+`s*` are senders (servers), `r*` are receivers (clients).
+`*go` are go with XorFEC. `*goN` are go with NullFEC. `*rs` are rust.
+
+|     | sgo | sgoN | srs |
+| --- | --- | --- | ---  |
+| rgo | ✅  |  ➖  |  ➖   |
+| rgoN |   |  ✅  |  ❌^[1]   |
+| rrs|  ➖  |  ✅  |  ✅   |
+
+- [1]: We believe this is due to missing endianness conversion of the size metadata field in the go implementation. (rrs is not affected, because it doesn't use the size.)
 
 Below is a more detailed breakdown of the implementation's supported features.
 We prefered implementing different subsets / levels of inteligence to see how they interoperate.
