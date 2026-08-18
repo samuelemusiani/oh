@@ -15,8 +15,6 @@ use protocol::Hash;
 use protocol::data::{hash_chunk_from_iter, hash_empty_chunk, build_merkle_tree, hash_encoded_metadata_packet};
 
 // TODO: Not yet implemented:
-// * requesting manifests
-// * requesting file data
 // * directories
 // * storing to file (we could have an abstract data receiver, that we feed with
 //   metadata and file data and that instructs us to fetch files)
@@ -24,7 +22,6 @@ use protocol::data::{hash_chunk_from_iter, hash_empty_chunk, build_merkle_tree, 
 //   (maybe should have something where each merkle tree node is either complete
 //   or not, and if it becomes complete, it notifies all its parents that it's complete.
 //   eventually such a parent will be file root. (and file root could notify abstract receiver))
-// * re-requesting metadata and file data
 
 // allow max this many feedback packets per second
 const MAX_NUM_FEEDBACK_PACKETS_PER_SEC: u32 = 2000;
@@ -39,6 +36,9 @@ const MANIFEST_REQ_INACTIVITY_REREQUEST_TIMEOUT: std::time::Duration = std::time
 // (Note: This timeout marks the end of the time window in that we request. The
 // (max of the) ones above are mark the beginning.)
 const MANIFEST_AD_INACTIVITY_REREQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+// Like above, but for files.
+const FILE_RECV_INACTIVITY_REREQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1000);
+const FILE_REQ_INACTIVITY_REREQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1000);
 
 struct FeedbackState {
     last_reqest_id: u16,
@@ -206,13 +206,6 @@ pub struct Client {
     empty_chunk_hidx: MerklePoolIdx,
     // How much data we received and how much feedback we should send, per sender ip.
     feedback_states: Mutex<HashMap<Ipv6Addr, FeedbackState>>,
-    // Hashes that we want to request.
-    // (We always try to request from lowest known tree level.)
-    // Manifest hahses, as well as data hashes of files we want to have go in here.
-    // TODO: Do not request (until timeout) if somone already requested, or if answer is already happening. Or: If anything is happening.
-    // TODO: should store manifest hashes separately, as they're higher priority (might even request when there's ongoing traffic)
-    // TODO: should also give up after N times for manifest hashes (unless it's seen again)
-    desired_hashes: Mutex<Vec<MerklePoolIdx>>,
     // Root hashes of manifests that we still want to receive.
     // Requester is controlled via this.
     // Every manifest goes in here. Completed ones, as well as those where we
@@ -274,7 +267,6 @@ impl Client {
             merkle_pool: merkle_pool.into(),
             empty_chunk_hidx,
             feedback_states: Default::default(),
-            desired_hashes: Default::default(),
             desired_manifests: Default::default(),
             desired_files: Default::default(),
             manifest_states: Default::default(),
@@ -320,15 +312,8 @@ impl Client {
                 addr, base16::encode_lower(advertisement_packet.hash));
 
         let mut merkle_pool = self.merkle_pool.lock().await;
-        let (root_hidx, root_hash_was_inserted) = merkle_pool.pool(advertisement_packet.hash);
+        let (root_hidx, _root_hash_was_inserted) = merkle_pool.pool(advertisement_packet.hash);
         merkle_pool.node_mut(root_hidx).is_manifest_root = true;
-
-        if root_hash_was_inserted { // TODO: remove this stupid thing. having seen the hash before does not imply it was advertised before
-            // did not see before ==> desire it
-            // (We desire any Manifest, to find out what files are offered.)
-            let mut desired_hashes = self.desired_hashes.lock().await;
-            desired_hashes.push(root_hidx);
-        }
 
         let is_manifest_complete: bool;
         {
@@ -382,7 +367,7 @@ impl Client {
 
         // Collect all new known hashes
         let mut merkle_pool = self.merkle_pool.lock().await;
-        let (manifest_hidx, manifest_hidx_new) = merkle_pool.pool(metadata_packet.manifest_hash);
+        let (manifest_hidx, _manifest_hidx_new) = merkle_pool.pool(metadata_packet.manifest_hash);
         let (data_hidx, _data_hidx_new) = merkle_pool.pool(metadata_packet.data_hash);
         let (extrameta_hidx, _extrameta_hidx_new) = merkle_pool.pool(metadata_packet.extra_metadata_hash);
         merkle_pool.node_mut(manifest_hidx).is_manifest_root = true;
@@ -390,11 +375,7 @@ impl Client {
         merkle_pool.node_mut(extrameta_hidx).is_extrameta_root = true;
         // drop(merkle_pool); // unlock
 
-        if manifest_hidx_new {
-            // Oho, a new manifest that we don't know about.
-            let mut desired_hashes = self.desired_hashes.lock().await;
-            desired_hashes.push(manifest_hidx);
-        }
+        // (TODO: could desire manifest if not seen before)
 
         // Update completedness of the manifest
         {
@@ -857,7 +838,7 @@ impl Client {
     async fn request_some_manifests(&self) -> Result<bool, AppError> {
         let merkle_pool = self.merkle_pool.lock().await;
         let mut desired_manifests = self.desired_manifests.lock().await;
-        let manifest_states = self.manifest_states.lock().await;
+        let mut manifest_states = self.manifest_states.lock().await;
 
         let mut to_remove: Vec<MerklePoolIdx> = vec![];
         let mut did_find_something = false;
@@ -865,39 +846,44 @@ impl Client {
 
         // just take any one
         for hidx in desired_manifests.iter() {
-            if let Some(manifest_state) = manifest_states.get(hidx) {
-                if manifest_state.is_complete {
-                    debug!("Manifest complete, no longer desired.");
-                    to_remove.push(*hidx);
-                    continue;
-                }
-
-                if manifest_state.last_time_recved + MANIFEST_RECV_INACTIVITY_REREQUEST_TIMEOUT > t_now {
-                    continue; // did not time out yet
-                }
-                if manifest_state.last_time_requested + MANIFEST_REQ_INACTIVITY_REREQUEST_TIMEOUT > t_now {
-                    continue; // did not time out yet
-                }
-                if manifest_state.last_time_advertised + MANIFEST_AD_INACTIVITY_REREQUEST_TIMEOUT < t_now {
-                    // timed out
-                    to_remove.push(*hidx);
-                    continue;
-                }
-
-                // send the RequestLeaves packet
-                let root_hash = &merkle_pool.node(*hidx).hash;
-                let feedback_packet = protocol::packet::Packet::RequestLeaves(protocol::packet::RequestLeavesPacket {
-                    root_hash: root_hash,
-                });
-                self.socket.send_to(&protocol::encode_packet(feedback_packet)?, (self.multicast_addr, self.multicast_port)).await?;
-                debug!("Sent LeavesRequest for manifest {}", base16::encode_lower(root_hash));
-
-                did_find_something = true;
-                break;
-
+            let manifest_state = if let Some(manifest_state) = manifest_states.get_mut(hidx) {
+                manifest_state
             } else {
                 warn!("Found hash in desired_manifests without manifest state.");
+                to_remove.push(*hidx);
+                continue;
+            };
+
+            if manifest_state.is_complete {
+                debug!("Manifest complete, no longer desired.");
+                to_remove.push(*hidx);
+                continue;
             }
+
+            if manifest_state.last_time_recved + MANIFEST_RECV_INACTIVITY_REREQUEST_TIMEOUT > t_now {
+                continue; // did not time out yet
+            }
+            if manifest_state.last_time_requested + MANIFEST_REQ_INACTIVITY_REREQUEST_TIMEOUT > t_now {
+                continue; // did not time out yet
+            }
+            if manifest_state.last_time_advertised + MANIFEST_AD_INACTIVITY_REREQUEST_TIMEOUT < t_now {
+                // timed out
+                to_remove.push(*hidx);
+                continue;
+            }
+
+            // send the RequestLeaves packet
+            let root_hash = &merkle_pool.node(*hidx).hash;
+            let req_packet = protocol::packet::Packet::RequestLeaves(protocol::packet::RequestLeavesPacket {
+                root_hash: root_hash,
+            });
+            self.socket.send_to(&protocol::encode_packet(req_packet)?, (self.multicast_addr, self.multicast_port)).await?;
+            debug!("Sent LeavesRequest for manifest {}", base16::encode_lower(root_hash));
+
+            manifest_state.last_time_requested = t_now;
+
+            did_find_something = true;
+            break;
         }
 
         for hidx in to_remove {
@@ -909,14 +895,98 @@ impl Client {
 
     // returns true if something was requested
     async fn request_some_files(&self) -> Result<bool, AppError> {
-        let desired_files = self.desired_files.lock().await;
-        if desired_files.is_empty() {
-            return Ok(false);
+        let merkle_pool = self.merkle_pool.lock().await;
+        let mut desired_files = self.desired_files.lock().await;
+        let mut file_states = self.file_states.lock().await;
+        let leaf_states = self.leaf_states.lock().await;
+
+        let mut num_requests = 0;
+        const MAX_REQUESTS: u32 = 20; // don't send more requets after we have this many
+        let mut to_remove: Vec<MerklePoolIdx> = vec![];
+        let t_now = std::time::Instant::now();
+
+        for file_root_hidx in desired_files.iter() {
+            let file_state = if let Some(file_state) = file_states.get_mut(file_root_hidx) {
+                file_state
+            } else {
+                warn!("Found hash in desired_manifests without manifest state.");
+                to_remove.push(*file_root_hidx);
+                continue;
+            };
+
+            if file_state.leaves_complete {
+                debug!("File complete, no longer desired.");
+                to_remove.push(*file_root_hidx);
+                continue;
+            }
+
+            if file_state.last_time_recved + FILE_RECV_INACTIVITY_REREQUEST_TIMEOUT > t_now {
+                continue; // did not time out yet
+            }
+            if file_state.last_time_requested + FILE_REQ_INACTIVITY_REREQUEST_TIMEOUT > t_now {
+                continue; // did not time out yet
+                // TODO: this should maybe be per leaf
+            }
+
+            if file_state.leaf_hashes_correct {
+                // we know the hashes of the leaves => we know which leaves are
+                // incorrect: those that are not complete
+
+                let file_root_hash = &merkle_pool.node(*file_root_hidx).hash;
+
+                for (leaf_idx, leaf_hidx) in file_state.leaf_hashes.iter().enumerate() {
+                    if let Some(leaf_state) = leaf_states.get(leaf_hidx) {
+                        if leaf_state.is_complete {
+                            continue; // Leaf complete, no reason to request
+                        }
+                    } else {
+                        warn!("No leaf_state found for leaf in file_state. Should not happen.");
+                    }
+
+                    let req_packet = protocol::packet::Packet::RequestLeaf(protocol::packet::RequestLeafPacket {
+                        root_hash: file_root_hash,
+                        index: leaf_idx as u32,
+                    });
+                    self.socket.send_to(&protocol::encode_packet(req_packet)?, (self.multicast_addr, self.multicast_port)).await?;
+                    debug!("Sent LeafRequest for file {}, leaf_idx {}",
+                            base16::encode_lower(file_root_hash), leaf_idx);
+
+                    num_requests += 1;
+                    if num_requests >= MAX_REQUESTS {
+                        break;
+                    }
+                }
+
+            } else {
+                // TODO:
+                // try to guess which hashes are incorrect
+                // => probably those that are default-constructed (= empty chunk)
+                // and not at end
+
+                // for now: just request all leaves again
+                let file_root_hash = &merkle_pool.node(*file_root_hidx).hash;
+                let req_packet = protocol::packet::Packet::RequestLeaves(protocol::packet::RequestLeavesPacket {
+                    root_hash: file_root_hash,
+                });
+                self.socket.send_to(&protocol::encode_packet(req_packet)?, (self.multicast_addr, self.multicast_port)).await?;
+                debug!("Sent LeavesRequest for file {}", base16::encode_lower(file_root_hash));
+
+                num_requests += 1;
+            }
+
+            file_state.last_time_requested = t_now;
+
+            num_requests += 1;
+            if num_requests >= MAX_REQUESTS {
+                break;
+            }
         }
 
-        //TODO
+        for hidx in to_remove {
+            desired_files.remove(&hidx);
+        }
 
-        return Ok(false);
+        return Ok(num_requests != 0);
     }
 
     async fn requester_run(&self) -> Result<(), AppError> {
