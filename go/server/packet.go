@@ -11,7 +11,7 @@ import (
 
 func (f *file) MetadataPacket(manifestHash [32]byte) *packet.Metadata {
 	size := make([]uint8, 8)
-	binary.NativeEndian.PutUint64(size, f.size)
+	binary.BigEndian.PutUint64(size, f.size)
 	return &packet.Metadata{
 		ManifestHash:      manifestHash,
 		DataHash:          [32]byte(f.mt.Root()),

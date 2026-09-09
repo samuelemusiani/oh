@@ -91,7 +91,7 @@ mloop:
 
 	// Create file with the size from metadata
 	var err error
-	fileStruct.mmapFile, err = c.createFile(fPath, binary.NativeEndian.Uint64(fileData.Size))
+	fileStruct.mmapFile, err = c.createFile(fPath, binary.BigEndian.Uint64(fileData.Size))
 	if err != nil {
 		if errors.Is(err, ErrFileExists) {
 			c.l["file"].Debug("file already exists, skipping", "file_hash", hf, "path", fPath)
@@ -206,7 +206,7 @@ func (ch *chunkHandler) findTotalSize(c *Client) {
 		panic(fmt.Sprintf("file not found for hash %x, this should never happen", ch.fileHash))
 	}
 	c.filesMapMutex.Unlock()
-	ch.totalSize = binary.NativeEndian.Uint64(fileDataFromMetadata(f.metadata).Size)
+	ch.totalSize = binary.BigEndian.Uint64(fileDataFromMetadata(f.metadata).Size)
 }
 
 // Writes a complete chunk to the file. It expects the chunk to be complet
