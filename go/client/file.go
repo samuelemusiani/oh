@@ -645,53 +645,55 @@ func (ch *chunkHandler) merkleTreeForFileFromChunks() (*merkletree.MerkleTree, e
 
 // MerkleTreeForFileFromFile creates a Merkle tree for a file from the file
 // itself. This is slow and should be done separately from the chunk handler
-func (c *Client) merkleTreeForFileFromFile(hf [32]byte) (*merkletree.MerkleTree, error) {
-	var mmapFile *mmap.File
-	var mtDepth uint8
-	c.filesMapMutex.Lock()
-	f, ok := c.filesMap[hf]
-	if !ok {
-		c.filesMapMutex.Unlock()
-		return nil, fmt.Errorf("file not found for hash %x", hf)
-	}
-	mmapFile = f.mmapFile
-
-	mtDepth = fileDataFromMetadata(f.metadata).MerkleTreeDepth
-	c.filesMapMutex.Unlock()
-
-	chunks, err := c.chunker.ChunkFile(mmapFile)
-	if err != nil {
-		return nil, fmt.Errorf("could not chunk file: %w", err)
-	}
-
-	expectedLeafs := merkletree.LeafsFromDepth(mtDepth)
-	calculatedLeafs := merkletree.NextPowerOfTwo(uint32(len(chunks)))
-	if expectedLeafs != calculatedLeafs {
-		c.l["file"].Debug("Merkle tree depth does not match number of chunks", "file_hash", htos(hf), "expected_leafs", expectedLeafs, "calculated_leafs", calculatedLeafs)
-		return nil, nil
-	}
-
-	mt, err := merkletree.NewMerkleTree(calculatedLeafs, func(leaf uint32) ([]byte, error) {
-		h := hashFunc()
-		h.Reset()
-		h.Write([]byte{0})
-		if leaf >= uint32(len(chunks)) {
-			// If the leaf index is greater than the number of chunks, we return the
-			// hash of an empty chunk
-			return h.Sum(nil), nil
-		}
-		// We cannot use the Hash() func for the chunk because we need to appen 0
-		// to the beginning of it.
-		d, err := chunks[leaf].Data(f.mmapFile)
-		if err != nil {
-			return nil, fmt.Errorf("could not read chunk data: %w", err)
-		}
-		h.Write(d)
-		return h.Sum(nil), nil
-	}, hashFunc())
-	if err != nil {
-		return nil, fmt.Errorf("could not create Merkle tree: %w", err)
-	}
-
-	return mt, nil
-}
+// func (c *Client) merkleTreeForFileFromFile(hf [32]byte) (*merkletree.MerkleTree, error) {
+// 	var mmapFile *mmap.File
+// 	var mtDepth uint8
+// 	c.filesMapMutex.Lock()
+// 	f, ok := c.filesMap[hf]
+// 	if !ok {
+// 		c.filesMapMutex.Unlock()
+// 		return nil, fmt.Errorf("file not found for hash %x", hf)
+// 	}
+// 	mmapFile = f.mmapFile
+//
+// 	mtDepth = fileDataFromMetadata(f.metadata).MerkleTreeDepth
+// 	c.filesMapMutex.Unlock()
+//
+// 	chunks, err := c.chunker.ChunkFile(mmapFile)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("could not chunk file: %w", err)
+// 	}
+//
+// 	expectedLeafs := merkletree.LeafsFromDepth(mtDepth)
+// 	calculatedLeafs := merkletree.NextPowerOfTwo(uint32(len(chunks)))
+//
+// 	fmt.Println("mtDepth", mtDepth, "expectedLeafs", expectedLeafs, "len(chunks)", len(chunks), "calculatedLeafs", calculatedLeafs)
+// 	if expectedLeafs != calculatedLeafs {
+// 		c.l["file"].Debug("Merkle tree depth does not match number of chunks", "file_hash", htos(hf), "expected_leafs", expectedLeafs, "calculated_leafs", calculatedLeafs)
+// 		return nil, fmt.Errorf(fmt.Sprintf("Merkle tree depth does not match number of chunks. expected_leafs: %d calculated_leafs: %d", expectedLeafs, calculatedLeafs))
+// 	}
+//
+// 	mt, err := merkletree.NewMerkleTree(calculatedLeafs, func(leaf uint32) ([]byte, error) {
+// 		h := hashFunc()
+// 		h.Reset()
+// 		h.Write([]byte{0})
+// 		if leaf >= uint32(len(chunks)) {
+// 			// If the leaf index is greater than the number of chunks, we return the
+// 			// hash of an empty chunk
+// 			return h.Sum(nil), nil
+// 		}
+// 		// We cannot use the Hash() func for the chunk because we need to appen 0
+// 		// to the beginning of it.
+// 		d, err := chunks[leaf].Data(f.mmapFile)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("could not read chunk data: %w", err)
+// 		}
+// 		h.Write(d)
+// 		return h.Sum(nil), nil
+// 	}, hashFunc())
+// 	if err != nil {
+// 		return nil, fmt.Errorf("could not create Merkle tree: %w", err)
+// 	}
+//
+// 	return mt, nil
+// }

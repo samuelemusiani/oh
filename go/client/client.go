@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
@@ -249,21 +248,27 @@ func (c *Client) run() error {
 			}
 
 		case <-finish:
+			// This check is redundant and would also introduce errors in the
+			// verification when the chunking algorithm differ from server to receiver.
+
 			// Check that files are received correctly
-			wg := sync.WaitGroup{}
-			for h := range c.filesMap {
-				wg.Go(func() {
-					mt, err := c.merkleTreeForFileFromFile(h)
-					if err != nil {
-						c.l["global"].Error("error getting merkle tree for file", "hash", htos(h), "error", err)
-						return
-					}
-					if !bytes.Equal(mt.Root(), h[:]) {
-						c.l["global"].Error("file hash does not match merkle tree root", "hash", htos(h), "merkle_root", htos([32]byte(mt.Root())))
-					}
-				})
-			}
-			wg.Wait()
+			// wg := sync.WaitGroup{}
+			// for h := range c.filesMap {
+			// 	wg.Go(func() {
+			// 		mt, err := c.merkleTreeForFileFromFile(h)
+			// 		if err != nil {
+			// 			c.l["global"].Error("error getting merkle tree for file", "hash", htos(h), "error", err)
+			// 			return
+			// 		}
+			// 		if mt == nil {
+			// 			panic("MT IS NILL FUCK")
+			// 		}
+			// 		if !bytes.Equal(mt.Root(), h[:]) {
+			// 			c.l["global"].Error("file hash does not match merkle tree root", "hash", htos(h), "merkle_root", htos([32]byte(mt.Root())))
+			// 		}
+			// 	})
+			// }
+			// wg.Wait()
 
 			c.l["global"].Info("All files received, exiting")
 
