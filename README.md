@@ -25,7 +25,7 @@ The compability between different implementations is shown below.
 | rgoN | ➖  |  ✅  |  ❌^[1]   |
 | rrs|  ➖  |  ✅  |  ✅   |
 
-- [1]: We believe this is due to missing endianness conversion of the size metadata field in the go implementation. (rrs is not affected, because it doesn't use the size.)
+- [1]: We believe this is due to missing endianness conversion of the size metadata field in the go implementation (rrs is not affected, because it doesn't use the size.). We confirmed this, and a patch is available in the `go-endianess` branch that makes the two implementations fully compatible.
 
 Below is a more detailed breakdown of the implementation's supported features.
 We prefered implementing different subsets / levels of inteligence to see how they interoperate.
